@@ -1,0 +1,79 @@
+# ============================================
+# IBKR 交易助手 — 全局配置
+# ============================================
+
+# --- 连接配置 ---
+connection:
+  # 默认使用 IB Gateway Paper Trading
+  host: "127.0.0.1"
+  port: 4001          # 4001=Gateway Paper, 4002=Gateway Live
+  client_id: 1
+  # 重连配置
+  reconnect:
+    max_retries: 10
+    base_delay: 1     # 初始重连延迟（秒）
+    max_delay: 60     # 最大重连延迟（秒）
+  # 心跳间隔（秒）
+  heartbeat_interval: 30
+
+# --- 市场数据 ---
+market_data:
+  # 历史数据缓存
+  cache:
+    enabled: true
+    cache_dir: "data/history"
+    format: "parquet"  # parquet | csv
+  # 实时行情
+  streaming:
+    # 默认K线大小（秒）
+    bar_size: 5
+    # 订阅超时（秒）
+    timeout: 120
+
+# --- 风控规则 ---
+risk:
+  # PDT 日内交易限制
+  pdt:
+    enabled: true
+    max_day_trades: 3        # 5个交易日内最多
+    warning_threshold: 2     # 第2次开始预警
+    rolling_window_days: 5
+
+  # 仓位限制
+  position:
+    max_single_stock_pct: 0.20   # 单票最大仓位 20%
+    max_total_position_pct: 0.80 # 总持仓上限 80%
+
+  # 熔断
+  circuit_breaker:
+    daily_loss_pct: 0.05       # 日亏损 5% 熔断
+    consecutive_losses: 3      # 连续亏损 3 笔暂停
+    cool_down_minutes: 30      # 冷却时间 30 分钟
+    weekly_loss_pct: 0.10      # 周亏损 10% 熔断
+
+# --- 通知 ---
+notification:
+  wechat:
+    enabled: true
+    # 推送级别控制
+    push_levels:
+      urgent: true      # 紧急（PDT预警/熔断/断线）
+      important: true   # 重要（成交确认/大盈亏）
+      daily: true       # 日常（开盘/收盘摘要）
+  email:
+    enabled: false
+
+# --- 交易时段 ---
+trading_hours:
+  timezone: "America/New_York"
+  market_open: "09:30"
+  market_close: "16:00"
+  pre_market_start: "04:00"
+  after_hours_end: "20:00"
+
+# --- 日志 ---
+logging:
+  level: "INFO"          # DEBUG | INFO | WARNING | ERROR
+  file: "logs/app.log"
+  max_size_mb: 10
+  backup_count: 5

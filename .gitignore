@@ -1,0 +1,32 @@
+# 敏感信息
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# 本地数据
+data/history/
+data/*.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# 日志
+logs/
+*.log
+
+# 回测结果
+backtest_results/
+data/monitor_status.txt
+data/imported/
+com.ibkr.briefing.plist
