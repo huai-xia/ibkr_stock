@@ -25,7 +25,7 @@
 | **技术指标** | `pandas-ta` | 覆盖 200+ 技术指标 |
 | **NLP / 情感分析** | `transformers` + FinBERT | 财经新闻情感分析，评估时政事件影响 |
 | **微信通知** | 企业微信机器人 Webhook | 免费、支持 Markdown，推送交易信号和告警 |
-| **远程计算** | rsync + SSH（113 服务器） | 大规模回测/参数优化同步到远端执行 |
+| **远程计算** | rsync + SSH（远程服务器） | 大规模回测/参数优化同步到远端执行 |
 | **配置管理** | `python-dotenv` + YAML | 敏感信息 .env，策略参数 YAML |
 | **Web 界面** | Streamlit（二期可选） | 快速搭建监控面板 |
 
@@ -38,7 +38,7 @@ ibkr_stock/
 ├── README.md
 ├── PROJECT_PLAN.md
 ├── requirements.txt
-├── Makefile                      # 包含远程同步到 113 服务器的脚本
+├── Makefile                      # 包含远程同步到 远程服务器的脚本
 ├── .env.example                  # 配置模板（含所有可配置项说明）
 ├── .gitignore
 ├── config/
@@ -94,7 +94,7 @@ ibkr_stock/
 │   ├── run_strategy.py
 │   ├── download_history.py
 │   ├── backtest.py
-│   └── remote/                   # 远程 113 服务器执行脚本
+│   └── remote/                   # 远程 远程服务器执行脚本
 │       ├── batch_backtest.py     # 批量回测
 │       └── param_optimize.py     # 参数优化
 ├── tests/
@@ -212,7 +212,7 @@ ibkr_stock/
 
 ```
 本地回测：小规模、单策略快速验证
-远程回测（113 服务器）：
+远程回测（远程服务器）：
   - 大规模参数扫描（网格搜索/贝叶斯优化）
   - 多策略并行回测
   - 通过 Makefile: make remote-backtest
@@ -287,15 +287,15 @@ ibkr_stock/
   - 多策略并行对比
 
 工作流：
-  make sync          # 同步代码到 113 服务器
-  make remote-backtest  # 在 113 执行回测
+  make sync          # 同步代码到 远程服务器
+  make remote-backtest  # 在 远程执行回测
   make remote-fetch     # 取回结果文件
 
 Makefile 关键命令：
   sync              - 同步代码（排除 .git/data/logs 等）
-  remote-backtest   - 在 113 执行批量回测
-  remote-optimize   - 在 113 执行参数优化
-  fetch-results     - 从 113 拉取结果到本地
+  remote-backtest   - 在 远程执行批量回测
+  remote-optimize   - 在 远程执行参数优化
+  fetch-results     - 从远程拉取结果到本地
 ```
 
 ### 4.10 CLI 交互界面
@@ -354,7 +354,7 @@ ibkr-stock learn pdt-rule        # 打开对应学习文档
 | 技术指标 | pandas-ta 封装 |
 | 内置策略 × 2 | 动量 + 均值回归 |
 | 本地回测 | 回测引擎 + 绩效报告 |
-| 远程回测 | 113 服务器批量回测脚本 + Makefile |
+| 远程回测 | 远程服务器批量回测脚本 + Makefile |
 | 学习文档 | 策略原理、技术指标、情感分析 |
 
 **里程碑 🎯**：时政新闻自动推送 + 策略可回测 + 远程可运算。
@@ -375,7 +375,7 @@ ibkr-stock learn pdt-rule        # 打开对应学习文档
 
 ### Q1: 需要远程运算吗？
 
-> **是的**。大规模回测和参数优化会涉及大量计算，通过 `make sync` 同步到 113 服务器执行，结果回传。日常轻量操作在本地完成。
+> **是的**。大规模回测和参数优化会涉及大量计算，通过 `make sync` 同步到 远程服务器执行，结果回传。日常轻量操作在本地完成。
 
 ### Q2: 通知推送到个人微信？
 
@@ -430,7 +430,7 @@ ibkr-stock learn pdt-rule        # 打开对应学习文档
 | Pacing Limit | 本地缓存 + 增量拉取，冷启动用 yfinance 补充 |
 | PDT 误判导致违规 | 风控模块硬阻止 + 下单前检查 + 微信告警双重提醒 |
 | FinBERT 噪声过高 | 只对高置信度（>0.7）结果发出调整建议；人工可覆盖 |
-| 远程服务器无法联网 | 113 为内网，回测数据需本地下好同步上去 |
+| 远程服务器无法联网 | 远程服务器为内网，回测数据需本地下好同步上去 |
 | 实盘误操作 | 风控硬限制 + Paper 验证 30 天后再上线 |
 
 ---
@@ -439,7 +439,7 @@ ibkr-stock learn pdt-rule        # 打开对应学习文档
 
 确认以下问题后开始第一阶段编码：
 
-1. ~~项目类型~~ → **本地 + 远程**（大规模运算同步 113）
+1. ~~项目类型~~ → **本地 + 远程**（大规模运算同步远程）
 2. ~~IBKR 客户端~~ → **IB Gateway**
 3. ~~通知方式~~ → **企业微信机器人**
 4. ~~交易品种~~ → 先做**美股**，后续扩展期权/期货？
@@ -578,6 +578,6 @@ src/analysis/signal_engine.py  ← 统一信号引擎
 | 1 | 信号引擎独立化 + 量化算法(ATR/HMM/Hawkes等) |
 | 2 | Paper Trading 验证(等账户开通) |
 | 3 | macOS GUI 桌面应用(启动/停止/告警面板) |
-| 4 | 远程113批量回测 |
+| 4 | 远程批量回测 |
 | 5 | 更多策略(统计套利/波动率) |
 | 6 | 更多学习文档 |
