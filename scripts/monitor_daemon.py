@@ -354,7 +354,12 @@ def _load_watchlist() -> list[dict]:
     """从配置文件读取自选股列表（含止损止盈）"""
     watchlist_path = Path("config/watchlist.yaml")
     if not watchlist_path.exists():
-        return []
+        # 兜底：如果是克隆的仓库，用示例文件
+        example_path = Path("config/watchlist.example.yaml")
+        if example_path.exists():
+            watchlist_path = example_path
+        else:
+            return []
 
     try:
         with open(watchlist_path) as f:
