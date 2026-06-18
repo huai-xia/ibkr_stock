@@ -1,0 +1,103 @@
+# ============================================
+# 自选股观察列表
+# 格式: 代码 [止损价] [止盈价]
+# ============================================
+
+# ── 半导体 · 芯片 ──
+NVDA
+AMD
+ARM
+AVGO
+QCOM
+MRVL
+INTC
+AMAT
+MU
+STX
+SNDK
+DELL
+TSEM
+CRDO
+COHR
+AEIS
+VSH
+
+# ── AI / 数据中心 ──
+APLD
+NVTS
+CRCL
+NBIS
+CRWV
+
+# ── 软件 · SaaS ──
+NOW
+SNOW
+MDB
+TEAM
+PLTR
+PANW
+SNPS
+
+# ── 杠杆 ETF ──
+SOXL
+SOXS
+KORU
+
+# ── 行业 ETF ──
+IGV
+EWY
+USO
+BNO
+
+# ── 航天 ──
+ASTS
+RKLX
+SPCE
+RDW
+
+# ── 加密货币 / 矿企 ──
+BTC
+HIVE
+WULF
+
+# ── 能源 ──
+OKLO
+BE
+
+# ── 光电 / 通信 ──
+POET
+TE
+ASX
+
+# ── 量子 / 新兴科技 ──
+QUBT
+DRAM
+
+# ── 稀土 / 材料 ──
+CRML
+USAR
+
+# ── 生物科技 ──
+CBRS
+
+# ── 交通 ──
+ALK
+
+# ── 期权 / ADR ──
+UNM
+MRAAY
+
+# ── 韩国 ──
+000660
+005930
+.KOSPI
+
+# ── 其他 ──
+AAPL
+TSLA
+ORCL
+FIGR
+AAOX
+
+# ── 杠杆 ETF（含止损止盈）──
+MVLL 135 200

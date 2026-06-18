@@ -141,7 +141,7 @@ def main():
 
         try:
             # 连接
-            cm = ConnectionManager(host="127.0.0.1", port=args.port, client_id=935, max_retries=3)
+            cm = ConnectionManager(host="127.0.0.1", port=args.port, client_id=250, max_retries=3)
             ib = cm.connect()
 
             # 下载缺失的持仓数据
@@ -392,13 +392,15 @@ def main():
                 # ── 汇总所有告警（含持仓+自选），统一发一封邮件 ──
                 if not args.no_push:
                     email_parts = []
+                    friend_parts = []  # 朋友只看自选股
                     advice_parts = []  # 操作建议
 
                     # ① 持仓告警 + 操作建议
                     if alerts:
-                        email_parts.append("## 🛡️ 持仓告警\n")
                         for a in alerts:
-                            email_parts.append(f"- {a.message}")
+                            msg_line = f"- {a.message}"
+                            email_parts.append(msg_line)
+                            # 朋友不收持仓告警，跳过
                             advice = _get_advice(a)
                             if advice:
                                 advice_parts.append(advice)
@@ -421,25 +423,25 @@ def main():
 
                     # ④ 盘前/夜盘异动
                     if extended_move_alerts:
-                        email_parts.append("## 📡 盘前夜盘异动\n")
                         for alert in extended_move_alerts[:10]:
-                            email_parts.append(f"- {alert}")
-                            # 生成建议
+                            line = f"- {alert}"
+                            email_parts.append(line)
+                            friend_parts.append(line)  # 朋友也看
                             if "大涨" in alert:
                                 advice_parts.append(f"⚠️ {alert.split()[1]}: 盘前大涨，不宜追高，等开盘确认")
                             elif "大跌" in alert:
                                 advice_parts.append(f"👀 {alert.split()[1]}: 盘前大跌，关注是否有负面新闻")
 
                     if deduped_signals or wl_alerts_deduped:
-                        email_parts.append("## 📡 自选股异动\n")
                         for s in deduped_signals:
-                            email_parts.append(
-                                f"- {s['symbol']}: {s['signal']['reason']} | "
-                                f"${s['current']:.2f} | 距昨收 {s['day_change_pct']:+.1f}% | "
-                                f"{s['fund_flow']}"
-                            )
+                            line = (f"- {s['symbol']}: {s['signal']['reason']} | "
+                                    f"${s['current']:.2f} | 距昨收 {s['day_change_pct']:+.1f}% | "
+                                    f"{s['fund_flow']}")
+                            email_parts.append(line)
+                            friend_parts.append(line)  # 朋友也看
                         for a in wl_alerts_deduped:
                             email_parts.append(f"- {a}")
+                            friend_parts.append(f"- {a}")
                         email_parts.append("")
 
                     if email_parts:
@@ -478,6 +480,11 @@ def main():
                             subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
                             _send_email(subject, email_body)
                             log(f"  📧 监控报告已推送 (活跃告警: {len(_active_alerts)}条)")
+
+                            # 给朋友单独发（仅自选股，不含持仓）
+                            if friend_parts and len(friend_parts) > 2:
+                                _send_friend_email(friend_parts)
+                                log(f"  📧 朋友推送已发送 ({len(friend_parts)}条自选异动)")
                         else:
                             log(f"  ⏳ 告警冷却中 (活跃: {len(_active_alerts)}条)，跳过推送")
 
@@ -825,10 +832,10 @@ def _calc_dip_levels(symbol: str, current_price: float) -> tuple[float, float, f
 
         # 入场: 当前价（左侧抄底）
         entry = round(current_price, 2)
-        # 止损: 入场价 - 1.5×ATR
-        stop = round(current_price - 1.5 * atr, 2)
-        # 止盈: SMA20（近期均值回归目标，比VWAP更敏感）
-        target = round(sma20, 2)
+        # 止损: 入场价 - 2.0×ATR（给足够波动空间）
+        stop = round(current_price - 2.0 * atr, 2)
+        # 止盈: SMA20 + 0.5%缓冲
+        target = round(sma20 * 1.005, 2)
 
         return (entry, stop, target)
     except:
@@ -895,7 +902,7 @@ def _check_ibkr(host: str, port: int) -> bool:
     """检查 IBKR Gateway 是否在线"""
     try:
         from src.core.connection import ConnectionManager
-        cm = ConnectionManager(host=host, port=port, client_id=935, max_retries=1)
+        cm = ConnectionManager(host=host, port=port, client_id=250, max_retries=1)
         ib = cm.connect()
         ib.disconnect()
         return True
@@ -911,6 +918,27 @@ def _check_futu() -> bool:
         ret, _ = ctx.get_global_state()
         ctx.close()
         return ret == RET_OK
+    except:
+        return False
+
+
+def _send_friend_email(parts: list[str]) -> bool:
+    """发送仅含自选股异动的邮件给朋友（无持仓信息）"""
+    try:
+        user = get_env("FRIEND_SMTP_USER", "")
+        password = get_env("FRIEND_SMTP_PASSWORD", "")
+        if not user or not password:
+            return False
+
+        body = "<html><body style='font-family:sans-serif;max-width:500px'>"
+        body += f"<p>📡 自选股异动 · {datetime.now().strftime('%H:%M')}</p>"
+        body += "<div style='background:#f0f4ff;padding:12px;border-left:3px solid #3498db'>"
+        for p in parts[:10]:
+            body += f"<p style='margin:4px 0;font-size:14px'>{p.strip('- ')}</p>"
+        body += "</div></body></html>"
+
+        notifier = EmailNotifier("smtp.qq.com", 587, user, password)
+        return notifier.send("📡 自选股异动", body, html=True)
     except:
         return False
 

@@ -48,6 +48,8 @@ class FeatureCache:
         self._dq_close: deque = deque(maxlen=22)    # 最大窗口+1
         self._dq_volume: deque = deque(maxlen=22)
         self._dq_close20: deque = deque(maxlen=21)   # Z-Score/波动率窗口
+        self._ema_20: float = 0.0  # EMA(20) 状态
+        self._ema_alpha: float = 2.0 / 21.0  # α = 2/(N+1)
         # VWAP 累加
         self._vwap_pv_sum: float = 0.0
         self._vwap_v_sum: float = 0.0
@@ -130,12 +132,18 @@ class FeatureCache:
         n = len(self._dq_close)
         row = {"timestamp": ts, "session": session, "close": round(close, 2)}
 
-        # ── SMA (滑动窗口均线) ──
+        # ── SMA & EMA (滑动窗口均线) ──
         c_list = list(self._dq_close)
         if n >= 5:
             row["sma_5"] = round(sum(c_list[-5:]) / 5, 2)
         if n >= 20:
             row["sma_20"] = round(sum(c_list[-20:]) / 20, 2)
+            # EMA(20): 第一天用SMA初始化，后续指数加权
+            if self._ema_20 == 0.0:
+                self._ema_20 = row["sma_20"]
+            else:
+                self._ema_20 = self._ema_alpha * close + (1 - self._ema_alpha) * self._ema_20
+            row["ema_20"] = round(self._ema_20, 2)
 
         # ── RSI (简单均值, 14周期) ──
         if n >= 15:
@@ -160,6 +168,17 @@ class FeatureCache:
         self._vwap_pv_sum += close * max(volume, 1)
         self._vwap_v_sum += max(volume, 1)
         row["vwap_cum"] = round(self._vwap_pv_sum / self._vwap_v_sum, 2) if self._vwap_v_sum > 0 else round(close, 2)
+
+        # ── 综合目标 (多因素加权) ──
+        if n >= 20 and hasattr(self, '_ema_20') and self._ema_20 > 0:
+            ema = self._ema_20
+            sma = row.get("sma_20", close)
+            # 滚动20期VWAP（而非全天累加VWAP）
+            c = list(self._dq_close)
+            v = list(self._dq_volume)
+            vwap20 = float(np.average(c[-20:], weights=v[-20:])) if sum(v[-20:]) > 0 else sma
+            # EMA60% + 滚动VWAP25% + SMA15%
+            row["comp_target"] = round(ema * 0.60 + vwap20 * 0.25 + sma * 0.15, 2)
 
         # ── 量比 ──
         if n >= 20:
