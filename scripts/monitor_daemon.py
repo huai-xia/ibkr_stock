@@ -317,16 +317,20 @@ def main():
                         email_parts.append("")
 
                     if email_parts:
-                        email_body = f"## 📊 IBKR 监控报告\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')} (美东)\n\n"
-                        email_body += "\n".join(email_parts)
-                        email_body += "\n---\n*🤖 监控守护进程自动推送*"
+                        # ── 冷却检查：同一告警 30 分钟内不重复发送 ──
+                        if _should_send_alert(email_parts):
+                            email_body = f"## 📊 IBKR 监控报告\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')} (美东)\n\n"
+                            email_body += "\n".join(email_parts)
+                            email_body += "\n---\n*🤖 监控守护进程自动推送*"
 
-                        has_critical = any(
-                            "跌破" in p or "🚫" in p for p in email_parts
-                        )
-                        subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
-                        _send_email(subject, email_body)
-                        log(f"  📧 监控报告已推送")
+                            has_critical = any(
+                                "跌破" in p or "🚫" in p for p in email_parts
+                            )
+                            subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
+                            _send_email(subject, email_body)
+                            log(f"  📧 监控报告已推送")
+                        else:
+                            log(f"  ⏳ 告警冷却中，跳过推送")
 
                 else:
                     log(f"  📡 自选股: 短线无异常信号")
@@ -450,6 +454,62 @@ def _check_news_for_symbol(symbol: str) -> list[str]:
         return related
     except:
         return []
+
+
+# ── 告警冷却：防止同一事件反复发送邮件 ──
+_alert_cooldown: dict = {}  # key: "symbol|alert_type" → value: last_send_timestamp
+COOLDOWN_SECONDS = 1800  # 30 分钟冷却
+
+
+def _should_send_alert(email_parts: list[str]) -> bool:
+    """检查是否应该发送告警（冷却期外）"""
+    global _alert_cooldown
+    now = datetime.now().timestamp()
+
+    # 提取告警中的股票和类型
+    for line in email_parts:
+        if "UNM" in line and "止损" in line:
+            key = "UNM|stop_loss"
+        elif "UNM" in line and "止盈" in line:
+            key = "UNM|take_profit"
+        elif "加仓价" in line:
+            # 提取股票
+            for word in line.split():
+                if word.isupper() and len(word) <= 5:
+                    key = f"{word}|add_position"
+                    break
+            else:
+                continue
+        elif "减仓价" in line:
+            for word in line.split():
+                if word.isupper() and len(word) <= 5:
+                    key = f"{word}|reduce_position"
+                    break
+            else:
+                continue
+        elif "暴跌" in line or "急跌" in line:
+            for word in line.replace(":", "").split():
+                if word.isupper() and len(word) <= 5:
+                    key = f"{word}|sharp_drop"
+                    break
+            else:
+                key = "watchlist|sharp_move"
+        elif "急涨" in line or "暴涨" in line:
+            for word in line.replace(":", "").split():
+                if word.isupper() and len(word) <= 5:
+                    key = f"{word}|sharp_rise"
+                    break
+            else:
+                key = "watchlist|sharp_move"
+        else:
+            continue
+
+        last_sent = _alert_cooldown.get(key, 0)
+        if now - last_sent < COOLDOWN_SECONDS:
+            return False  # 冷却中
+        _alert_cooldown[key] = now
+
+    return True
 
 
 def _send_email(subject: str, body: str) -> bool:
