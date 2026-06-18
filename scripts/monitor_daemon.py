@@ -366,11 +366,14 @@ def main():
                 try:
                     detector = AnomalyDetector()
 
-                    # 收集夜盘快照（批量，一次Futu调用覆盖全部自选股）
+                    # 收集夜盘快照（批量，仅美股，排除韩国/加密等）
                     all_syms = list(set(
                         [p["symbol"] for p in pf.get_positions() if p.get("position", 0) != 0]
                         + [item["symbol"] for item in watchlist]
                     ))
+                    # 只保留美股代码 (1-5位大写字母，不含数字和点)
+                    import re
+                    all_syms = [s for s in all_syms if re.match(r'^[A-Z]{1,5}$', s)]
                     if all_syms:
                         snapshots = collect_extended_snapshots(all_syms)
                         for sym, snap in snapshots.items():

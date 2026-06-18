@@ -180,9 +180,9 @@ class AnomalyDetector:
                 ))
 
         # 3-4. 快速下跌/上涨 (10分钟 ROC)
+        t = self.THRESHOLDS
         if n >= 10:
             roc10 = (prices[-1] - prices[-11]) / prices[-11] * 100
-            t = self.THRESHOLDS
             if roc10 < -t["roc_drop_10"]:
                 alerts.append(AnomalyAlert(
                     symbol=symbol, alert_type="quick_drop", session="extended",
