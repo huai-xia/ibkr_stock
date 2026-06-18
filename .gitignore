@@ -32,4 +32,6 @@ data/imported/
 data/alerts_today.md
 com.ibkr.briefing.plist
 config/watchlist.yaml
+data/minutes/
+data/features/
 data/portfolio_strategy.yaml

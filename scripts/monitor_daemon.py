@@ -31,6 +31,9 @@ from src.analysis.monitor import PositionMonitor, PositionAlert
 from src.analysis.exit_strategy import ExitStrategyEngine
 from src.analysis.stock_data import StockDataManager
 from src.data.price_validator import PriceValidator
+from src.data.minute_store import MinuteStore, collect_extended_snapshots
+from src.data.feature_cache import FeatureCache
+from src.analysis.anomaly import AnomalyDetector
 from src.notify.email import EmailNotifier
 from src.trade.portfolio import Portfolio
 from src.analysis.signals import SignalDetector
@@ -358,6 +361,51 @@ def main():
                         else:
                             log(f"  ⏳ 告警冷却中 (活跃: {len(_active_alerts)}条)，跳过推送")
 
+                # ── MDP: 分钟数据收集 + 异常检测 ──
+                anomaly_alerts = []
+                try:
+                    detector = AnomalyDetector()
+
+                    # 收集夜盘快照（批量，一次Futu调用覆盖全部自选股）
+                    all_syms = list(set(
+                        [p["symbol"] for p in pf.get_positions() if p.get("position", 0) != 0]
+                        + [item["symbol"] for item in watchlist]
+                    ))
+                    if all_syms:
+                        snapshots = collect_extended_snapshots(all_syms)
+                        for sym, snap in snapshots.items():
+                            ms = MinuteStore(sym)
+                            df_ext = ms.load_extended()
+                            if df_ext is not None and not df_ext.empty:
+                                # 特征缓存
+                                fc = FeatureCache(sym)
+                                fc.update_from_extended(df_ext)
+                                # 异常检测
+                                prev_close = snap.get("prev_close", 0)
+                                for a in detector.detect_extended(sym, df_ext, prev_close):
+                                    anomaly_alerts.append(a)
+
+                    # 盘中数据：如果已有1分钟线，也检测
+                    for sym in all_syms[:20]:  # 限制数量
+                        ms = MinuteStore(sym)
+                        df_1min = ms.recent_1min(30)
+                        if df_1min is not None and not df_1min.empty:
+                            fc = FeatureCache(sym)
+                            fc.update_from_1min(df_1min)
+                            for a in detector.detect_regular(sym, df_1min):
+                                anomaly_alerts.append(a)
+
+                except Exception as e:
+                    logger.debug(f"MDP 异常检测失败: {e}")
+
+                if anomaly_alerts:
+                    critical = [a for a in anomaly_alerts if a.level == "critical"]
+                    warnings = [a for a in anomaly_alerts if a.level == "warning"]
+                    for a in (critical[:3] + warnings[:3]):
+                        log(f"  {a.reason}")
+                    # 加入邮件
+                    for a in anomaly_alerts:
+                        email_parts.append(f"- {a.reason}")
                 else:
                     log(f"  📡 自选股: 短线无异常信号")
 
