@@ -466,48 +466,67 @@ def _should_send_alert(email_parts: list[str]) -> bool:
     global _alert_cooldown
     now = datetime.now().timestamp()
 
-    # 提取告警中的股票和类型
+    # 提取告警中的股票+类型+级别
     for line in email_parts:
-        if "UNM" in line and "止损" in line:
-            key = "UNM|stop_loss"
-        elif "UNM" in line and "止盈" in line:
-            key = "UNM|take_profit"
-        elif "加仓价" in line:
-            # 提取股票
-            for word in line.split():
-                if word.isupper() and len(word) <= 5:
-                    key = f"{word}|add_position"
-                    break
-            else:
-                continue
-        elif "减仓价" in line:
-            for word in line.split():
-                if word.isupper() and len(word) <= 5:
-                    key = f"{word}|reduce_position"
-                    break
-            else:
-                continue
+        sym = ""
+        alert_type = ""
+        severity = "warning"  # 默认
+
+        # 提取股票代码（第一个大写短词）
+        for word in line.replace(":", "").replace("⚠️","").replace("🚫","").replace("🎯","").replace("📌","").replace("🟢","").replace("🟡","").replace("🔴","").replace("🔔","").split():
+            w = word.strip("$").strip(".")
+            if w.isupper() and 2 <= len(w) <= 5 and w not in ("STRONG", "MEDIUM", "WEAK", "HIGH", "LOW"):
+                sym = w
+                break
+
+        # 识别告警类型和严重程度
+        if "跌破" in line or "🚫" in line or "触发止损" in line:
+            alert_type = "stop_loss"
+            severity = "critical"
+        elif "接近止损" in line or "距离止损" in line:
+            alert_type = "stop_loss"
+            severity = "warning"
+        elif "达到" in line or "止盈目标" in line:
+            alert_type = "take_profit"
+            severity = "critical"
+        elif "接近止盈" in line or "距离止盈" in line or "距目标" in line:
+            alert_type = "take_profit"
+            severity = "warning"
+        elif "加仓价" in line or "触及加仓" in line:
+            alert_type = "add_position"
+            severity = "critical"
+        elif "接近加仓" in line:
+            alert_type = "add_position"
+            severity = "warning"
+        elif "减仓价" in line or "触及减仓" in line:
+            alert_type = "reduce_position"
+            severity = "critical"
         elif "暴跌" in line or "急跌" in line:
-            for word in line.replace(":", "").split():
-                if word.isupper() and len(word) <= 5:
-                    key = f"{word}|sharp_drop"
-                    break
-            else:
-                key = "watchlist|sharp_move"
+            alert_type = "sharp_drop"
+            severity = "critical"
         elif "急涨" in line or "暴涨" in line:
-            for word in line.replace(":", "").split():
-                if word.isupper() and len(word) <= 5:
-                    key = f"{word}|sharp_rise"
-                    break
-            else:
-                key = "watchlist|sharp_move"
+            alert_type = "sharp_rise"
+            severity = "critical"
+        elif "跳空" in line:
+            alert_type = "gap"
+            severity = "warning"
         else:
             continue
 
-        last_sent = _alert_cooldown.get(key, 0)
-        if now - last_sent < COOLDOWN_SECONDS:
+        if not sym or not alert_type:
+            continue
+
+        # 关键：严重程度变了 → 立即发送
+        key = f"{sym}|{alert_type}"
+        last_sent, last_severity = _alert_cooldown.get(key, (0, ""))
+
+        if severity == "critical" and last_severity == "warning":
+            # 升级告警：冷却作废，立即发送
+            pass
+        elif now - last_sent < COOLDOWN_SECONDS:
             return False  # 冷却中
-        _alert_cooldown[key] = now
+
+        _alert_cooldown[key] = (now, severity)
 
     return True
 
