@@ -559,6 +559,7 @@ src/analysis/signal_engine.py  ← 统一信号引擎
 | 模块 | 状态 | 说明 |
 |------|:--:|------|
 | 连接管理 + 行情 | ✅ | IB Gateway + 4源实时价(富途/Yahoo/Finnhub/IBKR) |
+| 24h 延时价格 | ✅ | 富途夜盘/盘前/盘后 `overnight_price` 自动识别 |
 | 交易执行 + 风控 | ✅ | 下单(只读锁) + PDT + 仓位 + 熔断 |
 | 交易记录 + 同步 | ✅ | SQLite + IBKR sync + CSV导入 + 468笔历史 |
 | 交易画像 | ✅ | 胜率57%/盈亏比2.6/中线最优 |

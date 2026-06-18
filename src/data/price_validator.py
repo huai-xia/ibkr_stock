@@ -104,16 +104,27 @@ class PriceValidator:
             result.warning = f"所有渠道均无法获取 {symbol} 的实时价格"
             return result
 
-        # ── 取中位数 ──
-        sorted_prices = sorted(prices.values())
-        n = len(sorted_prices)
-        if n % 2 == 1:
-            result.price = round(sorted_prices[n // 2], 2)
+        # ── 取价格 ──
+        futu_d = details.get("futu", {})
+        non_futu_prices = [v["price"] for k, v in details.items() if k != "futu"]
+
+        # 判断是否延长时段：富途价与其他源偏差 > 2% 即为延长时段
+        if futu_d and non_futu_prices:
+            avg_other = sum(non_futu_prices) / len(non_futu_prices)
+            deviation = abs(futu_d["price"] - avg_other) / avg_other if avg_other > 0 else 0
+            if deviation > 0.02:
+                # 延长时间段：富途是最可靠的数据源
+                result.price = round(futu_d["price"], 2)
+            else:
+                result.price = round(sorted([futu_d["price"]] + non_futu_prices)[len(non_futu_prices) // 2], 2)
         else:
-            result.price = round((sorted_prices[n // 2 - 1] + sorted_prices[n // 2]) / 2, 2)
+            sorted_prices = sorted(prices.values())
+            n = len(sorted_prices)
+            result.price = round(sorted_prices[n // 2], 2) if n % 2 == 1 else round((sorted_prices[n // 2 - 1] + sorted_prices[n // 2]) / 2, 2)
 
         # ── 可信度评估 ──
-        price_range = max(sorted_prices) - min(sorted_prices)
+        all_prices = list(prices.values())
+        price_range = max(all_prices) - min(all_prices) if all_prices else 0
         pct_deviation = price_range / result.price * 100 if result.price > 0 else 0
 
         if len(prices) >= 2 and pct_deviation < 0.5:
@@ -281,7 +292,7 @@ class PriceValidator:
         return None
 
     def _from_futu(self, symbol: str) -> Optional[dict]:
-        """富途 OpenD 实时报价（含盘前盘后，免费）"""
+        """富途 OpenD 实时报价（含盘前/盘后/夜盘，免费）"""
         try:
             from futu import OpenQuoteContext, RET_OK
             ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
@@ -292,24 +303,38 @@ class PriceValidator:
                 row = data.iloc[0]
                 last = row.get('last_price', 0)
                 prev = row.get('prev_close_price', 0)
-                pre = row.get('pre_price', 0)
-                after = row.get('after_price', 0)
+                bid = row.get('bid_price', 0)
+                ask = row.get('ask_price', 0)
 
-                # 优先用盘前/盘后价
-                price = last
-                if pre > 0 and pre != last:
-                    price = pre  # 盘前时段用盘前价
+                # 延长时段数据
+                overnight = row.get('overnight_price', 0)   # 夜盘 (20:00-4:00 ET)
+                pre = row.get('pre_price', 0)               # 盘前 (4:00-9:30 ET)
+                after = row.get('after_price', 0)           # 盘后 (16:00-20:00 ET)
+                sec_status = str(row.get('sec_status', ''))
+
+                # 智能选择当前有效时段的价格
+                # 优先级: 夜盘 > 盘前 > 盘后 > 最新价
+                # 注意:  bid/ask 在延长时段可能更新不及时，不作为主要价格来源
+                if overnight > 0 and overnight != last:
+                    price = overnight
+                elif pre > 0 and pre != last:
+                    price = pre
                 elif after > 0 and after != last:
-                    price = after  # 盘后时段用盘后价
+                    price = after
+                else:
+                    price = last
 
                 if price > 0:
                     return {
                         "price": round(price, 2),
-                        "bid": 0, "ask": 0,
+                        "bid": round(bid, 2) if bid else 0,
+                        "ask": round(ask, 2) if ask else 0,
                         "volume": row.get('volume', 0),
                         "is_realtime": True,
                         "pre_market_price": round(pre, 2) if pre else 0,
                         "post_market_price": round(after, 2) if after else 0,
+                        "overnight_price": round(overnight, 2) if overnight else 0,
+                        "sec_status": sec_status,
                     }
         except Exception as e:
             logger.debug("富途报价失败 %s: %s", symbol, str(e)[:60])
