@@ -40,6 +40,7 @@ import yaml
 
 # ── 状态文件 ──
 STATUS_FILE = Path("data/monitor_status.txt")
+ALERTS_FILE = Path("data/alerts_today.md")
 STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 running = True
@@ -74,6 +75,16 @@ def main():
     # 清空状态文件
     with open(STATUS_FILE, "w") as f:
         f.write("")
+
+    # 初始化/续写当日告警文件
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if ALERTS_FILE.exists():
+        existing = ALERTS_FILE.read_text()
+        if today_str not in existing:
+            # 新的一天，清空
+            ALERTS_FILE.write_text(f"# 📊 当日告警记录 — {today_str}\n\n")
+    else:
+        ALERTS_FILE.write_text(f"# 📊 当日告警记录 — {today_str}\n\n")
 
     # 读取自选股列表
     watchlist = _load_watchlist()
@@ -321,10 +332,8 @@ def main():
                         _update_active_alerts(email_parts)
 
                         if _should_send_alert(email_parts):
-                            # 邮件包含：本次新告警 + 所有仍在活跃的旧告警
-                            all_parts = list(email_parts)  # 本次
-
-                            # 补上活跃告警中的其他条目（去重）
+                            # 组装邮件：本次新告警 + 所有仍在活跃的旧告警
+                            all_parts = list(email_parts)
                             seen = set()
                             for p in all_parts:
                                 seen.add(p[:40])
@@ -332,6 +341,9 @@ def main():
                                 if alert_key not in seen:
                                     all_parts.append(f"- {alert_text}")
                                     seen.add(alert_key)
+
+                            # ── 写入当日告警文件 ──
+                            _write_alerts_file(all_parts)
 
                             email_body = f"## 📊 IBKR 监控报告\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')} (美东)\n\n"
                             email_body += "\n".join(all_parts)
@@ -554,6 +566,33 @@ def _should_send_alert(email_parts: list[str]) -> bool:
         _alert_cooldown[key] = (now, severity)
 
     return True
+
+
+def _write_alerts_file(all_parts: list[str]):
+    """实时更新当日告警文件"""
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    ts = now.strftime("%H:%M:%S")
+
+    content = f"# 📊 当日告警记录 — {today_str}\n\n"
+    content += f"🕐 最后更新: {ts}\n\n"
+    content += f"📋 当前活跃告警: {len(_active_alerts)} 条\n\n---\n\n"
+
+    # 活跃告警
+    if _active_alerts:
+        content += "## ⚠️ 当前活跃\n\n"
+        for key, text in _active_alerts.items():
+            content += f"- `{ts}` {text}\n"
+    else:
+        content += "## ✅ 当前无活跃告警\n"
+
+    content += f"\n---\n*文件自动更新，监控守护进程每{COOLDOWN_SECONDS//60}分钟推送邮件*\n"
+
+    ALERTS_FILE.write_text(content)
+
+    # 同时追加状态日志
+    with open(STATUS_FILE, "a") as f:
+        f.write(f"[{ts}] 告警文件已更新 ({len(_active_alerts)}条活跃)\n")
 
 
 def _send_email(subject: str, body: str) -> bool:

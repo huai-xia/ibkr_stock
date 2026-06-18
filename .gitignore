@@ -29,6 +29,7 @@ logs/
 backtest_results/
 data/monitor_status.txt
 data/imported/
+data/alerts_today.md
 com.ibkr.briefing.plist
 config/watchlist.yaml
 data/portfolio_strategy.yaml
