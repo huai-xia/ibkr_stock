@@ -5,7 +5,7 @@ L0 分钟数据存储器
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +31,7 @@ class MinuteStore:
 
     def __init__(self, symbol: str):
         self.symbol = symbol.upper()
-        self._today = datetime.now().strftime("%Y-%m-%d")
+        self._today = (datetime.now() - timedelta(hours=12)).strftime("%Y-%m-%d")
         self._1min_path = BASE_DIR / f"{self.symbol}_{self._today}_1min.parquet"
         self._ext_path = BASE_DIR / f"{self.symbol}_{self._today}_extended.parquet"
 
@@ -166,6 +166,74 @@ class MinuteStore:
             "bars": len(df),
         }
 
+    def download_1min_today(self, ib=None) -> Optional[pd.DataFrame]:
+        """
+        拉取今日全部1分钟K线（优先富途实时，回退IBKR）
+
+        富途: 实时数据，无延迟
+        IBKR: 免费账户有15分钟延迟
+        """
+        # 优先用富途
+        try:
+            from futu import OpenQuoteContext, RET_OK, KLType, AuType
+            from datetime import datetime, timedelta
+
+            # 用美东日期，不是北京时间
+            et_today = (datetime.now() - timedelta(hours=12)).strftime("%Y-%m-%d")
+            ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+            ret, data, _ = ctx.request_history_kline(
+                code=f'US.{self.symbol}', start=et_today, end=et_today,
+                ktype=KLType.K_1M, autype=AuType.QFQ, max_count=500,
+            )
+            ctx.close()
+
+            if ret == RET_OK and len(data) > 0:
+                rows = []
+                for _, r in data.iterrows():
+                    rows.append({
+                        "timestamp": str(r['time_key']),
+                        "open": float(r['open']),
+                        "high": float(r['high']),
+                        "low": float(r['low']),
+                        "close": float(r['close']),
+                        "volume": float(r['volume']),
+                    })
+                df = pd.DataFrame(rows)
+                df.to_parquet(self._1min_path, index=False)
+                return df
+        except Exception as e:
+            logger.debug(f"富途下载{symbol}1分钟线失败: {e}")
+
+        # 回退 IBKR
+        if ib is not None and ib.isConnected():
+            try:
+                from ib_insync import Stock
+                contract = Stock(self.symbol, "SMART", "USD")
+                ib.qualifyContracts(contract)
+                bars = ib.reqHistoricalData(
+                    contract, endDateTime="", durationStr="1 D",
+                    barSizeSetting="1 min", whatToShow="TRADES",
+                    useRTH=True, formatDate=1,
+                )
+                if bars:
+                    rows = []
+                    for b in bars:
+                        rows.append({
+                            "timestamp": str(b.date),
+                            "open": float(b.open),
+                            "high": float(b.high),
+                            "low": float(b.low),
+                            "close": float(b.close),
+                            "volume": float(b.volume),
+                        })
+                    df = pd.DataFrame(rows)
+                    df.to_parquet(self._1min_path, index=False)
+                    return df
+            except Exception as e:
+                logger.debug(f"IBKR下载{symbol}1分钟线失败: {e}")
+
+        return None
+
     def count(self) -> int:
         """当日已累计的分钟线数量"""
         df = self.load_1min()
@@ -273,6 +341,7 @@ def collect_extended_snapshots(symbols: list[str]) -> dict[str, dict]:
             pre = row.get("pre_price", 0)
             after = row.get("after_price", 0)
             last = row.get("last_price", 0)
+            prev_close = row.get("prev_close_price", 0)  # 真正的昨收！
             bid = row.get("bid_price", 0)
             ask = row.get("ask_price", 0)
             vol = row.get("volume", 0)
@@ -299,7 +368,7 @@ def collect_extended_snapshots(symbols: list[str]) -> dict[str, dict]:
                 "bid": round(bid, 2) if bid else 0,
                 "ask": round(ask, 2) if ask else 0,
                 "volume": vol,
-                "prev_close": round(last, 2),
+                "prev_close": round(prev_close, 2),
                 "session": session["session"],
             }
 

@@ -115,7 +115,7 @@ class AnomalyDetector:
                 ))
 
         # 4. ROC 反转 (15分钟)
-        if n >= 15:
+        if n >= 16:
             roc_15 = (close[-1] - close[-16]) / close[-16] * 100
             if roc_15 < -5 and close[-1] > close[-6]:
                 alerts.append(AnomalyAlert(

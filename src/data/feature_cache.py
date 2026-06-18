@@ -1,10 +1,10 @@
 """
 L2 增量特征缓存
-从分钟线数据增量计算技术指标，缓存到 Parquet
-避免每次扫描从原始数据全量重算
+从分钟线数据滑动窗口增量计算技术指标，缓存到 Parquet
 """
 
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -16,78 +16,75 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path("data/features")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+# 滑动窗口大小
+WINDOWS = {"sma_5": 5, "sma_20": 20, "rsi": 14, "zscore": 20,
+           "vol_ratio": 20, "roc_5": 5, "roc_10": 10, "volatility": 20}
+
 
 class FeatureCache:
     """
-    单只股票的增量特征计算
+    单只股票的滑动窗口增量特征计算
+
+    原理: 每个特征维护一个固定大小的 deque，
+          新 bar 到来时 O(1) 更新，不重算历史数据。
 
     用法:
         fc = FeatureCache("AAPL")
-        fc.update_from_1min(df_1min)     # 增量更新盘中特征
-        fc.update_from_extended(df_ext)  # 增量更新夜盘特征
-        latest = fc.latest()             # 最新一行特征
-        history = fc.load()              # 全部特征历史
+        fc.update_from_1min(df_1min)
+        latest = fc.latest()
     """
 
-    # 特征列定义
     COLUMNS = [
-        "timestamp", "session",  # 时间戳 + 时段(regular/extended)
-        "close",                 # 收盘价（计算用）
-        "sma_5", "sma_20",       # 均线
-        "rsi_14",                # RSI
-        "zscore_20",             # 20周期 Z-Score
-        "vwap_cum",              # 累计VWAP
-        "vol_ratio_20",          # 20周期量比
-        "roc_5", "roc_10",       # 变化率
-        "volatility_20",         # 20周期波动率
+        "timestamp", "session", "close",
+        "sma_5", "sma_20", "rsi_14",
+        "zscore_20", "vwap_cum", "vol_ratio_20",
+        "roc_5", "roc_10", "volatility_20",
     ]
 
     def __init__(self, symbol: str):
         self.symbol = symbol.upper()
         self._path = BASE_DIR / f"{self.symbol}_features.parquet"
+        # 滑动窗口缓存
+        self._dq_close: deque = deque(maxlen=22)    # 最大窗口+1
+        self._dq_volume: deque = deque(maxlen=22)
+        self._dq_close20: deque = deque(maxlen=21)   # Z-Score/波动率窗口
+        # VWAP 累加
+        self._vwap_pv_sum: float = 0.0
+        self._vwap_v_sum: float = 0.0
 
     # ------------------------------------------------------------------
     # 增量更新
     # ------------------------------------------------------------------
 
     def update_from_1min(self, df_1min: pd.DataFrame):
-        """从1分钟K线增量计算特征"""
+        """从1分钟K线滑动窗口增量计算特征"""
         if df_1min is None or df_1min.empty:
             return
 
-        # 加载已有特征
         existing = self.load()
         last_computed = 0
         if existing is not None and not existing.empty:
             last_computed = len(existing[existing["session"] == "regular"])
 
-        # 只计算新增的行
         new_bars = df_1min.iloc[last_computed:]
         if new_bars.empty:
             return
 
-        close = df_1min["close"].values.astype(float)
-        volume = df_1min["volume"].values.astype(float)
-
         new_features = []
         for i in range(last_computed, len(df_1min)):
-            row = self._compute_row(
+            row = self._compute_row_sliding(
                 ts=str(df_1min.iloc[i].get("timestamp", "")),
                 session="regular",
-                close=close[i],
-                close_series=close[:i+1],
-                volume_series=volume[:i+1],
-                volume=volume[i] if i < len(volume) else 0,
+                close=float(df_1min.iloc[i]["close"]),
+                volume=float(df_1min.iloc[i].get("volume", 0)),
             )
             new_features.append(row)
 
         new_df = pd.DataFrame(new_features)
         self._append(new_df)
 
-        logger.debug("%s: 增量计算 %d 行盘中特征", self.symbol, len(new_df))
-
     def update_from_extended(self, df_ext: pd.DataFrame):
-        """从夜盘快照增量计算特征"""
+        """从夜盘快照滑动窗口增量计算特征"""
         if df_ext is None or df_ext.empty:
             return
 
@@ -100,75 +97,90 @@ class FeatureCache:
         if new_bars.empty:
             return
 
-        prices = df_ext["price"].values.astype(float)
-        volumes = df_ext["volume"].values.astype(float) if "volume" in df_ext.columns else np.zeros(len(df_ext))
-
         new_features = []
         for i in range(last_computed, len(df_ext)):
-            row = self._compute_row(
+            row = self._compute_row_sliding(
                 ts=str(df_ext.iloc[i].get("timestamp", "")),
                 session="extended",
-                close=prices[i],
-                close_series=prices[:i+1],
-                volume_series=volumes[:i+1],
-                volume=volumes[i] if i < len(volumes) else 0,
+                close=float(df_ext.iloc[i]["price"]),
+                volume=float(df_ext.iloc[i].get("volume", 0)),
             )
             new_features.append(row)
 
         new_df = pd.DataFrame(new_features)
         self._append(new_df)
 
-        logger.debug("%s: 增量计算 %d 行夜盘特征", self.symbol, len(new_df))
-
     # ------------------------------------------------------------------
-    # 核心计算
+    # 滑动窗口增量计算
     # ------------------------------------------------------------------
 
-    def _compute_row(
-        self, ts: str, session: str,
-        close: float, close_series: np.ndarray, volume_series: np.ndarray,
-        volume: float,
+    def _compute_row_sliding(
+        self, ts: str, session: str, close: float, volume: float,
     ) -> dict:
-        """计算一根K线对应的特征行"""
-        n = len(close_series)
+        """
+        O(1) 滑动窗口增量计算
 
-        row = {"timestamp": ts, "session": session, "close": round(float(close), 2)}
+        每个 deque 维护固定大小的窗口，新值入队时最旧值自动出队。
+        只对当前 bar 做 O(1) 运算，不重算历史。
+        """
+        self._dq_close.append(close)
+        self._dq_volume.append(volume)
+        self._dq_close20.append(close)
 
-        # SMA
+        n = len(self._dq_close)
+        row = {"timestamp": ts, "session": session, "close": round(close, 2)}
+
+        # ── SMA (滑动窗口均线) ──
+        c_list = list(self._dq_close)
         if n >= 5:
-            row["sma_5"] = round(float(np.mean(close_series[-5:])), 2)
+            row["sma_5"] = round(sum(c_list[-5:]) / 5, 2)
         if n >= 20:
-            row["sma_20"] = round(float(np.mean(close_series[-20:])), 2)
+            row["sma_20"] = round(sum(c_list[-20:]) / 20, 2)
 
-        # RSI (14)
+        # ── RSI (简单均值, 14周期) ──
         if n >= 15:
-            row["rsi_14"] = round(float(self._calc_rsi(close_series, 14)), 1)
+            c = list(self._dq_close)
+            deltas = [c[i+1] - c[i] for i in range(-15, -1)]
+            gains = [max(d, 0) for d in deltas]
+            losses = [abs(min(d, 0)) for d in deltas]
+            avg_gain = sum(gains) / 14
+            avg_loss = sum(losses) / 14
+            rs = avg_gain / avg_loss if avg_loss > 0 else 100
+            row["rsi_14"] = round(100.0 - 100.0 / (1.0 + rs), 1)
 
-        # Z-Score (20)
+        # ── Z-Score (滑动窗口) ──
+        if len(self._dq_close20) >= 20:
+            w20 = list(self._dq_close20)[-20:]
+            mu = sum(w20) / 20
+            var = sum((x - mu) ** 2 for x in w20) / 20
+            std = var ** 0.5
+            row["zscore_20"] = round((close - mu) / std, 2) if std > 0 else 0.0
+
+        # ── VWAP (增量累加) ──
+        self._vwap_pv_sum += close * max(volume, 1)
+        self._vwap_v_sum += max(volume, 1)
+        row["vwap_cum"] = round(self._vwap_pv_sum / self._vwap_v_sum, 2) if self._vwap_v_sum > 0 else round(close, 2)
+
+        # ── 量比 ──
         if n >= 20:
-            window = close_series[-20:]
-            mu, std = float(np.mean(window)), float(np.std(window))
-            row["zscore_20"] = round(float((close - mu) / std), 2) if std > 0 else 0.0
+            vol_list = list(self._dq_volume)
+            avg_vol = sum(vol_list[-20:-1]) / 19 if n > 1 else volume
+            row["vol_ratio_20"] = round(volume / avg_vol, 1) if avg_vol > 0 else 1.0
 
-        # VWAP
-        if n >= 1:
-            row["vwap_cum"] = round(float(np.average(close_series[-n:], weights=volume_series[-n:])), 2) if volume_series[-n:].sum() > 0 else round(float(close), 2)
-
-        # 量比
-        if n >= 20:
-            avg_vol = float(np.mean(volume_series[-20:-1])) if n > 1 else volume
-            row["vol_ratio_20"] = round(float(volume / avg_vol), 1) if avg_vol > 0 else 1.0
-
-        # ROC
+        # ── ROC ──
+        close_list = list(self._dq_close)
         if n >= 6:
-            row["roc_5"] = round(float((close - close_series[-6]) / close_series[-6] * 100), 1)
+            row["roc_5"] = round((close - close_list[-6]) / close_list[-6] * 100, 1)
         if n >= 11:
-            row["roc_10"] = round(float((close - close_series[-11]) / close_series[-11] * 100), 1)
+            row["roc_10"] = round((close - close_list[-11]) / close_list[-11] * 100, 1)
 
-        # 波动率 (20周期)
-        if n >= 20:
-            returns = np.diff(close_series[-20:]) / close_series[-21:-1]
-            row["volatility_20"] = round(float(np.std(returns) * 100), 2)
+        # ── 波动率 ──
+        if n >= 22:
+            w21 = close_list[-21:]
+            rets = [(w21[i+1] - w21[i]) / w21[i] for i in range(20)]
+            mu_r = sum(rets) / 20
+            var_r = sum((r - mu_r) ** 2 for r in rets) / 20
+            row["volatility_20"] = round(var_r ** 0.5 * 100, 2)
 
         return row
 
@@ -201,16 +213,13 @@ class FeatureCache:
         result.to_parquet(self._path, index=False)
 
     # ------------------------------------------------------------------
-    # 辅助
+    # 复制滑动窗口状态（跨 session 保持连续性）
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _calc_rsi(prices: np.ndarray, period: int = 14) -> float:
-        deltas = np.diff(prices[-period-1:])
-        gains = np.maximum(deltas, 0)
-        losses = np.abs(np.minimum(deltas, 0))
-        avg_gain = np.mean(gains) if len(gains) > 0 else 0
-        avg_loss = np.mean(losses) if len(losses) > 0 else 0
-        if avg_loss == 0:
-            return 100.0
-        return 100 - 100 / (1 + avg_gain / avg_loss)
+    def _copy_state(self, other: "FeatureCache"):
+        """从另一个 FeatureCache 复制滑动窗口状态"""
+        self._dq_close = deque(other._dq_close, maxlen=22)
+        self._dq_volume = deque(other._dq_volume, maxlen=22)
+        self._dq_close20 = deque(other._dq_close20, maxlen=21)
+        self._vwap_pv_sum = other._vwap_pv_sum
+        self._vwap_v_sum = other._vwap_v_sum

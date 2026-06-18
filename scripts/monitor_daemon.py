@@ -95,6 +95,11 @@ def main():
     log(f"   持仓: (从IBKR获取) | 自选: {len(watchlist)}只")
     log(f"   Ctrl+C 停止")
 
+    # 重置告警冷却（每次启动清零）
+    global _alert_cooldown, _active_alerts
+    _alert_cooldown.clear()
+    _active_alerts.clear()
+
     # 连接状态追踪
     ibkr_was_down = False
     futu_was_down = False
@@ -136,7 +141,7 @@ def main():
 
         try:
             # 连接
-            cm = ConnectionManager(host="127.0.0.1", port=args.port, client_id=1, max_retries=3)
+            cm = ConnectionManager(host="127.0.0.1", port=args.port, client_id=935, max_retries=3)
             ib = cm.connect()
 
             # 下载缺失的持仓数据
@@ -180,6 +185,9 @@ def main():
                     log(f"    {a.message}")
             else:
                 log(f"  ✅ 无告警")
+
+            # ── 提前定义变量，避免 UnboundLocalError ──
+            extended_move_alerts = []
 
             # ── 自选股短线监控（盘中实时 + 资金流向 + 新闻）──
             if watchlist:
@@ -324,78 +332,12 @@ def main():
 
                         if sig["note"]:
                             log(f"     💡 {sig['note']}")
-                # ── 汇总所有告警（含持仓+自选），统一发一封邮件 ──
-                if not args.no_push:
-                    email_parts = []
+                # ═══════════════════════════════════════════
+                # MDP 数据收集 (必须在邮件组装前执行)
+                # ═══════════════════════════════════════════
+                # 此块从下方移动上来，确保数据在邮件组装时就绪
 
-                    # ① 持仓告警
-                    if alerts:
-                        email_parts.append("## 🛡️ 持仓告警\n")
-                        for a in alerts:
-                            email_parts.append(f"- {a.message}")
-                        email_parts.append("")
-
-                    # ② 自选股异动（去重：每只股票只保留最重要的1条信号）
-                    seen_syms = set()
-                    deduped_signals = []
-                    for s in intraday_signals:
-                        sym = s["symbol"]
-                        if sym in seen_syms:
-                            continue
-                        # 只要有显著异动（>3% 日内或日间）就告警
-                        if abs(s.get("day_change_pct", 0)) > 3 or abs(s.get("intraday_pct", 0)) > 4:
-                            seen_syms.add(sym)
-                            deduped_signals.append(s)
-
-                    # ③ 自选股止损止盈
-                    wl_alerts_deduped = list(dict.fromkeys(watchlist_email_alerts))
-
-                    if deduped_signals or wl_alerts_deduped:
-                        email_parts.append("## 📡 自选股异动\n")
-                        for s in deduped_signals:
-                            email_parts.append(
-                                f"- {s['symbol']}: {s['signal']['reason']} | "
-                                f"${s['current']:.2f} | 距昨收 {s['day_change_pct']:+.1f}% | "
-                                f"{s['fund_flow']}"
-                            )
-                        for a in wl_alerts_deduped:
-                            email_parts.append(f"- {a}")
-                        email_parts.append("")
-
-                    if email_parts:
-                        # ── 更新活跃告警池 + 冷却检查 ──
-                        _update_active_alerts(email_parts)
-
-                        if _should_send_alert(email_parts):
-                            # 组装邮件：去重合并
-                            all_parts = list(email_parts)
-                            seen_texts = set()
-                            for p in all_parts:
-                                # 用告警核心文本做去重键（去掉前缀符号）
-                                text = p.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ").strip()
-                                if len(text) > 10:
-                                    seen_texts.add(text[:60])
-                            for alert_key, alert_text in _active_alerts.items():
-                                dedup_text = alert_text.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ")
-                                if dedup_text[:60] not in seen_texts:
-                                    all_parts.append(f"- {alert_text}")
-                                    seen_texts.add(dedup_text[:60])
-
-                            # ── 写入当日告警文件 ──
-                            _write_alerts_file(all_parts)
-
-                            email_body = _build_html_email(all_parts)
-
-                            has_critical = any(
-                                "跌破" in p or "🚫" in p for p in all_parts
-                            )
-                            subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
-                            _send_email(subject, email_body)
-                            log(f"  📧 监控报告已推送 (活跃告警: {len(_active_alerts)}条)")
-                        else:
-                            log(f"  ⏳ 告警冷却中 (活跃: {len(_active_alerts)}条)，跳过推送")
-
-                # ── MDP: 分钟数据收集 + 异常检测 ──
+                # ── MDP: 分钟数据收集 + 异常检测 + 盘前异动 ──
                 anomaly_alerts = []
                 try:
                     detector = AnomalyDetector()
@@ -411,6 +353,19 @@ def main():
                     if all_syms:
                         snapshots = collect_extended_snapshots(all_syms)
                         for sym, snap in snapshots.items():
+                            prev_close = snap.get("prev_close", 0)
+                            price = snap.get("price", 0)
+
+                            # 盘前/夜盘显著涨跌直接进邮件
+                            if prev_close > 0 and price > 0:
+                                change = (price - prev_close) / prev_close * 100
+                                if abs(change) > 3:
+                                    direction = "📈 大涨" if change > 0 else "📉 大跌"
+                                    extended_move_alerts.append(
+                                        f"{direction} {sym} {change:+.1f}% "
+                                        f"(昨收${prev_close:.2f} → ${price:.2f})"
+                                    )
+
                             ms = MinuteStore(sym)
                             df_ext = ms.load_extended()
                             if df_ext is not None and not df_ext.empty:
@@ -433,7 +388,99 @@ def main():
                                 anomaly_alerts.append(a)
 
                 except Exception as e:
-                    logger.debug(f"MDP 异常检测失败: {e}")
+                    log(f"  ⚠️ MDP异常: {e}")
+                # ── 汇总所有告警（含持仓+自选），统一发一封邮件 ──
+                if not args.no_push:
+                    email_parts = []
+                    advice_parts = []  # 操作建议
+
+                    # ① 持仓告警 + 操作建议
+                    if alerts:
+                        email_parts.append("## 🛡️ 持仓告警\n")
+                        for a in alerts:
+                            email_parts.append(f"- {a.message}")
+                            advice = _get_advice(a)
+                            if advice:
+                                advice_parts.append(advice)
+                        email_parts.append("")
+
+                    # ② 自选股异动（去重：每只股票只保留最重要的1条信号）
+                    seen_syms = set()
+                    deduped_signals = []
+                    for s in intraday_signals:
+                        sym = s["symbol"]
+                        if sym in seen_syms:
+                            continue
+                        # 只要有显著异动（>3% 日内或日间）就告警
+                        if abs(s.get("day_change_pct", 0)) > 3 or abs(s.get("intraday_pct", 0)) > 4:
+                            seen_syms.add(sym)
+                            deduped_signals.append(s)
+
+                    # ③ 自选股止损止盈
+                    wl_alerts_deduped = list(dict.fromkeys(watchlist_email_alerts))
+
+                    # ④ 盘前/夜盘异动
+                    if extended_move_alerts:
+                        email_parts.append("## 📡 盘前夜盘异动\n")
+                        for alert in extended_move_alerts[:10]:
+                            email_parts.append(f"- {alert}")
+                            # 生成建议
+                            if "大涨" in alert:
+                                advice_parts.append(f"⚠️ {alert.split()[1]}: 盘前大涨，不宜追高，等开盘确认")
+                            elif "大跌" in alert:
+                                advice_parts.append(f"👀 {alert.split()[1]}: 盘前大跌，关注是否有负面新闻")
+
+                    if deduped_signals or wl_alerts_deduped:
+                        email_parts.append("## 📡 自选股异动\n")
+                        for s in deduped_signals:
+                            email_parts.append(
+                                f"- {s['symbol']}: {s['signal']['reason']} | "
+                                f"${s['current']:.2f} | 距昨收 {s['day_change_pct']:+.1f}% | "
+                                f"{s['fund_flow']}"
+                            )
+                        for a in wl_alerts_deduped:
+                            email_parts.append(f"- {a}")
+                        email_parts.append("")
+
+                    if email_parts:
+                        # ── 更新活跃告警池 + 冷却检查 ──
+                        _update_active_alerts(email_parts)
+
+                        if iteration == 1 or _should_send_alert(email_parts):  # 首轮无条件发送
+                            # 组装邮件：去重合并
+                            all_parts = list(email_parts)
+                            seen_texts = set()
+                            for p in all_parts:
+                                # 用告警核心文本做去重键（去掉前缀符号）
+                                text = p.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ").strip()
+                                if len(text) > 10:
+                                    seen_texts.add(text[:60])
+                            for alert_key, alert_text in _active_alerts.items():
+                                dedup_text = alert_text.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ")
+                                if dedup_text[:60] not in seen_texts:
+                                    all_parts.append(f"- {alert_text}")
+                                    seen_texts.add(dedup_text[:60])
+
+                            # 操作建议
+                            if advice_parts:
+                                all_parts.append("## 💡 操作建议\n")
+                                for adv in advice_parts[:5]:
+                                    all_parts.append(f"- {adv}")
+
+                            # ── 写入当日告警文件 ──
+                            _write_alerts_file(all_parts)
+
+                            email_body = _build_html_email(all_parts)
+
+                            has_critical = any(
+                                "跌破" in p or "🚫" in p for p in all_parts
+                            )
+                            subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
+                            _send_email(subject, email_body)
+                            log(f"  📧 监控报告已推送 (活跃告警: {len(_active_alerts)}条)")
+                        else:
+                            log(f"  ⏳ 告警冷却中 (活跃: {len(_active_alerts)}条)，跳过推送")
+
 
                 # ── L1 多框架共振 ──
                 resonance_alerts = []
@@ -447,7 +494,7 @@ def main():
                                 resonance_alerts.extend(ra)
                                 ms.save_aggregated()  # 保存聚合结果
                 except Exception as e:
-                    logger.debug(f"共振检测失败: {e}")
+                    log(f"  ⚠️ 共振异常: {e}")
 
                 if resonance_alerts:
                     for a in resonance_alerts[:3]:
@@ -590,7 +637,7 @@ def _check_news_for_symbol(symbol: str) -> list[str]:
 # ── 告警冷却 + 活跃告警跟踪 ──
 _alert_cooldown: dict = {}  # key: "symbol|alert_type" → (last_send_timestamp, severity)
 _active_alerts: dict = {}   # 当前活跃的所有告警（所有检查周期累积）
-COOLDOWN_SECONDS = 1800  # 30 分钟冷却
+COOLDOWN_SECONDS = 600  # 10 分钟冷却
 
 
 def _update_active_alerts(email_parts: list[str]):
@@ -700,17 +747,114 @@ def _write_alerts_file(all_parts: list[str]):
         f.write(f"[{ts}] 告警文件已更新 ({len(_active_alerts)}条活跃)\n")
 
 
+def _get_advice(alert) -> str:
+    """根据告警类型生成操作建议（含具体价格）"""
+    msg = alert.message
+    sym = alert.symbol
+
+    # 止损相关
+    if "跌破" in msg or "触发止损" in msg:
+        return f"🔴 {sym}: 已触发止损 ${alert.threshold_price:.2f}，建议立即卖出平仓"
+    if "接近止损" in msg or "距离止损" in msg:
+        return f"🟡 {sym}: 距止损仅 {alert.distance_pct:.1f}%，建议设好卖单 ${alert.threshold_price:.2f}"
+
+    # 止盈相关
+    if "达到" in msg and "止盈" in msg:
+        return f"🟢 {sym}: 已达止盈 ${alert.threshold_price:.2f}，建议至少卖出50%锁定利润"
+    if "接近止盈" in msg or "距目标" in msg:
+        return f"🟢 {sym}: 接近止盈位，可设限价卖单 ${alert.threshold_price:.2f}"
+
+    # 加减仓
+    if "触及加仓价" in msg or "加仓价" in msg:
+        return f"📌 {sym}: 触及加仓线 ${alert.threshold_price:.2f}，可分批买入，注意仓位"
+
+    # 闪电崩盘 → 给出抄底价格
+    if "闪电崩盘" in msg or "急跌" in msg:
+        entry, stop, target = _calc_dip_levels(sym, alert.current_price)
+        if entry > 0:
+            return (f"👀 {sym}: 短线超跌至 ${alert.current_price:.2f}，"
+                    f"入场 ${entry:.2f} | 止损 ${stop:.2f} | 止盈 ${target:.2f}")
+        return f"👀 {sym}: 短线超跌，若无利空可考虑轻仓试探"
+
+    # VWAP偏离 > 3% → 回归目标
+    if "VWAP" in msg:
+        entry, stop, target = _calc_dip_levels(sym, alert.current_price)
+        if target > alert.current_price:
+            return (f"⚠️ {sym}: VWAP偏离，均值回归目标 ${target:.2f}，"
+                    f"现价 ${alert.current_price:.2f}，距目标 {(target-alert.current_price)/alert.current_price*100:.1f}%")
+
+    # 短线急涨
+    if "急涨" in msg:
+        return f"⚠️ {sym}: 短线急涨，不建议追高，已有持仓可考虑减仓"
+
+    return ""
+
+
+def _calc_dip_levels(symbol: str, current_price: float) -> tuple[float, float, float]:
+    """
+    计算抄底价格三要素: (入场价, 止损价, 止盈目标)
+    基于 VWAP + ATR
+    """
+    try:
+        from src.data.minute_store import MinuteStore
+        from src.data.feature_cache import FeatureCache
+        import numpy as np
+
+        ms = MinuteStore(symbol)
+        df = ms.load_1min()
+        if df is None or df.empty:
+            return (0, 0, 0)
+
+        close = df['close'].values.astype(float)
+
+        # SMA20作为止盈目标（近期均值回归，比VWAP更敏感）
+        sma20 = float(np.mean(close[-20:])) if len(close) >= 20 else current_price
+
+        # ATR(14) 作为止损距离
+        if len(close) >= 15:
+            tr_list = []
+            for i in range(-14, 0):
+                h = float(df.iloc[i]['high']) if 'high' in df.columns else close[i]
+                l = float(df.iloc[i]['low']) if 'low' in df.columns else close[i]
+                prev_c = close[i-1]
+                tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+                tr_list.append(tr)
+            atr = float(np.mean(tr_list))
+        else:
+            atr = current_price * 0.03
+
+        # 入场: 当前价（左侧抄底）
+        entry = round(current_price, 2)
+        # 止损: 入场价 - 1.5×ATR
+        stop = round(current_price - 1.5 * atr, 2)
+        # 止盈: SMA20（近期均值回归目标，比VWAP更敏感）
+        target = round(sma20, 2)
+
+        return (entry, stop, target)
+    except:
+        return (0, 0, 0)
+
+
 def _build_html_email(all_parts: list[str]) -> str:
     """构建简洁HTML邮件（无Markdown标记）"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 分离持仓告警和自选异动
+    # 分离持仓告警、操作建议、自选异动
     position_lines = []
     watchlist_lines = []
+    advice_lines = []
+    in_advice = False
 
     for line in all_parts:
         stripped = line.strip("- ")
-        if any(kw in stripped for kw in ["止损", "止盈", "加仓", "减仓", "UNM", "MRAAY"]):
+        if "操作建议" in stripped:
+            in_advice = True
+            continue
+        if in_advice:
+            advice_lines.append(stripped)
+        elif any(kw in stripped for kw in ["止损", "止盈", "加仓", "减仓", "UNM", "MRAAY"]):
+            position_lines.append(stripped)
+        elif "IBKR Gateway" in stripped or "富途" in stripped:
             position_lines.append(stripped)
         else:
             watchlist_lines.append(stripped)
@@ -718,6 +862,14 @@ def _build_html_email(all_parts: list[str]) -> str:
     html = f"""<html><body style="font-family: -apple-system, Arial, sans-serif; max-width: 600px;">
 <p style="color: #666; font-size: 12px;">IBKR 监控报告 · {now} (美东)</p>
 """
+
+    # 操作建议（置顶，最重要）
+    if advice_lines:
+        html += '<div style="background: #fff9e6; border-left: 4px solid #f39c12; padding: 14px; margin: 8px 0;">'
+        html += '<p style="font-weight: bold; color: #e67e22; margin: 0 0 8px 0; font-size: 15px;">💡 操作建议</p>'
+        for line in advice_lines:
+            html += f'<p style="margin: 4px 0; font-size: 14px; font-weight: 500;">{line}</p>'
+        html += '</div>'
 
     if position_lines:
         html += '<div style="background: #fff3f0; border-left: 3px solid #e74c3c; padding: 12px; margin: 8px 0;">'
@@ -743,7 +895,7 @@ def _check_ibkr(host: str, port: int) -> bool:
     """检查 IBKR Gateway 是否在线"""
     try:
         from src.core.connection import ConnectionManager
-        cm = ConnectionManager(host=host, port=port, client_id=1, max_retries=1)
+        cm = ConnectionManager(host=host, port=port, client_id=935, max_retries=1)
         ib = cm.connect()
         ib.disconnect()
         return True
