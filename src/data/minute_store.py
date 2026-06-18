@@ -177,10 +177,16 @@ class MinuteStore:
 def collect_extended_snapshots(symbols: list[str]) -> dict[str, dict]:
     """
     一次性从富途批量拉取延长时段快照并存入分钟线
+    自动根据当前时段选择正确价格字段
     返回 {symbol: price_data}
     """
     try:
         from futu import OpenQuoteContext, RET_OK
+        from src.data.market_session import get_market_session
+
+        session = get_market_session()
+        price_field = session["price_field"]
+
         ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
 
         codes = [f"US.{s}" for s in symbols]
@@ -206,8 +212,16 @@ def collect_extended_snapshots(symbols: list[str]) -> dict[str, dict]:
             ask = row.get("ask_price", 0)
             vol = row.get("volume", 0)
 
-            # 选当前有效价格
-            price = overnight or pre or after or last
+            # 根据时段选正确价格字段
+            if price_field == "pre_price":
+                price = pre or last
+            elif price_field == "after_price":
+                price = after or last
+            elif price_field == "overnight_price":
+                price = overnight or last
+            else:
+                price = last
+
             if price <= 0:
                 continue
 
@@ -220,9 +234,8 @@ def collect_extended_snapshots(symbols: list[str]) -> dict[str, dict]:
                 "bid": round(bid, 2) if bid else 0,
                 "ask": round(ask, 2) if ask else 0,
                 "volume": vol,
-                "overnight": round(overnight, 2) if overnight else 0,
-                "pre_market": round(pre, 2) if pre else 0,
-                "after_hours": round(after, 2) if after else 0,
+                "prev_close": round(last, 2),
+                "session": session["session"],
             }
 
         return results
