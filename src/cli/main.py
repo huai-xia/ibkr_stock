@@ -32,6 +32,7 @@ from src.analysis.exit_strategy import ExitStrategyEngine
 from src.data.price_validator import PriceValidator
 from src.analysis.monitor import PositionMonitor
 from src.analysis.briefing import DailyBriefing
+from src.analysis.portfolio_strategy import PortfolioStrategyManager
 from src.config import get_env, WECHAT_WEBHOOK_URL, ROOT_DIR
 
 logger = logging.getLogger(__name__)
@@ -548,6 +549,44 @@ def cmd_briefing(args):
 
 
 # ------------------------------------------------------------------
+# 持仓策略
+# ------------------------------------------------------------------
+
+def cmd_portfolio_strategy(args):
+    """查看/刷新持仓策略"""
+    ib, factory, md, pf = _connect(args.host, args.port, args.client_id)
+    mgr = PortfolioStrategyManager(ib)
+
+    if args.refresh:
+        print("\n  🔄 刷新持仓策略...")
+        data = mgr.refresh(risk_profile=args.risk)
+    else:
+        data = mgr.load()
+
+    print(f"\n{mgr.show(data)}")
+
+    if args.set_symbol:
+        kwargs = {}
+        if args.set_stop:
+            kwargs["stop_loss"] = args.set_stop
+        if args.set_target:
+            kwargs["take_profit"] = args.set_target
+        if args.set_add:
+            kwargs["add_on_dip"] = args.set_add
+        if args.set_reduce:
+            kwargs["reduce_on_rip"] = args.set_reduce
+        if args.set_notes:
+            kwargs["notes"] = args.set_notes
+
+        mgr.update_holding(args.set_symbol, **kwargs)
+        print(f"\n  ✅ {args.set_symbol} 策略已更新")
+        print(f"{mgr.show(mgr.load())}")
+
+    ib.disconnect()
+    print()
+
+
+# ------------------------------------------------------------------
 # 一键概览
 # ------------------------------------------------------------------
 
@@ -794,6 +833,18 @@ def main():
     p_brief.add_argument("--no-push", action="store_true", help="仅显示，不推送邮件")
     p_brief.add_argument("--email-only", action="store_true", help="仅推送邮件，不终端显示")
 
+    # portfolio-strategy
+    p_ps = subparsers.add_parser("portfolio-strategy",
+        help="[持仓] 查看/设置持仓策略 | 用法: portfolio-strategy [--refresh] [--set SYM --stop 价 --target 价]")
+    p_ps.add_argument("--refresh", action="store_true", help="从IBKR刷新并重算策略")
+    p_ps.add_argument("--risk", default="moderate", choices=["conservative","moderate","aggressive"])
+    p_ps.add_argument("--set-symbol", default="", help="要自定义的股票代码")
+    p_ps.add_argument("--set-stop", type=float, help="自定义止损价")
+    p_ps.add_argument("--set-target", type=float, help="自定义止盈价")
+    p_ps.add_argument("--set-add", type=float, help="加仓触发价")
+    p_ps.add_argument("--set-reduce", type=float, help="减仓触发价")
+    p_ps.add_argument("--set-notes", default="", help="备注")
+
     # overview
     p_ov = subparsers.add_parser("overview", help="[查询] 一键概览: status + portfolio + pdt + trade-summary")
     p_ov.add_argument("--sync", action="store_true", help="概览前先同步 IBKR 最新交易")
@@ -818,6 +869,7 @@ def main():
         "news": cmd_news,
         "backtest": cmd_backtest,
         "overview": cmd_overview,
+        "portfolio-strategy": cmd_portfolio_strategy,
         "analyze": cmd_analyze,
         "monitor": cmd_monitor,
         "briefing": cmd_briefing,

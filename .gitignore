@@ -31,3 +31,4 @@ data/monitor_status.txt
 data/imported/
 com.ibkr.briefing.plist
 config/watchlist.yaml
+data/portfolio_strategy.yaml
