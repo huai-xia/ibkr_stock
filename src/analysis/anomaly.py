@@ -267,6 +267,100 @@ class AnomalyDetector:
 
         return alerts
 
+    # ── 多时间框架共振 (L1) ──
+
+    def detect_resonance(self, symbol: str, aggregated: dict[int, 'pd.DataFrame']) -> list[AnomalyAlert]:
+        """
+        多时间框架共振检测
+        在3/5/15/30分钟框架上分别检测，多框架同向 → 强信号
+
+        Args:
+            symbol: 股票代码
+            aggregated: {3: df_3min, 5: df_5min, 15: df_15min, 30: df_30min}
+
+        Returns:
+            共振告警列表
+        """
+        alerts = []
+        if not aggregated:
+            return alerts
+
+        # 对每个框架分别检测
+        frame_signals = {}  # {period: [signal_directions]}
+
+        for period, df in aggregated.items():
+            if df is None or df.empty:
+                continue
+
+            close = df["close"].values.astype(float)
+            volume = df["volume"].values.astype(float) if "volume" in df.columns else None
+            n = len(close)
+
+            signals = []
+
+            # Z-Score (长样本) 或 ROC (短样本)
+            if n >= 10:
+                z = self._zscore(close, min(10, n))
+                if z < -1.5:
+                    signals.append("down")
+                elif z > 1.5:
+                    signals.append("up")
+            elif n >= 4:
+                # 短样本用首尾ROC代替Z
+                roc_n = min(5, n - 1)
+                roc = (close[-1] - close[-roc_n]) / close[-roc_n] * 100
+                if roc < -1.5:
+                    signals.append("down")
+                elif roc > 1.5:
+                    signals.append("up")
+
+            # 量确认
+            if n >= 5 and volume is not None:
+                recent_vol = float(np.mean(volume[-3:])) if len(volume) >= 3 else volume[-1]
+                base_vol = float(np.mean(volume[:-3])) if len(volume) > 3 else recent_vol
+                ratio = recent_vol / base_vol if base_vol > 0 else 1
+                if ratio > 2:
+                    signals.append("volume")
+
+            frame_signals[period] = signals
+
+        # 统计共振
+        up_frames = [p for p, sigs in frame_signals.items() if "up" in sigs]
+        down_frames = [p for p, sigs in frame_signals.items() if "down" in sigs]
+        vol_frames = [p for p, sigs in frame_signals.items() if "volume" in sigs]
+
+        price = 0
+        for df in aggregated.values():
+            if df is not None and not df.empty:
+                price = float(df["close"].iloc[-1])
+                break
+
+        # 共振：2+框架同向即可，量确认加分
+        total_frames = len(frame_signals)
+        min_frames = 2 if total_frames <= 3 else 3  # 数据少时放宽要求
+
+        if len(up_frames) >= min_frames:
+            frames_str = "+".join([f"{p}min" for p in sorted(up_frames)])
+            strength = "strong" if len(vol_frames) >= 1 else "medium"
+            alerts.append(AnomalyAlert(
+                symbol=symbol, alert_type="resonance_up", session="regular",
+                level="info",
+                reason=f"📈 多框架共振看涨 ({frames_str}){'·放量' if vol_frames else ''}",
+                current_price=price, trigger_value=min_frames, metric_value=len(up_frames),
+            ))
+
+        if len(down_frames) >= min_frames:
+            frames_str = "+".join([f"{p}min" for p in sorted(down_frames)])
+            strength = "strong" if len(vol_frames) >= 1 else "medium"
+            alerts.append(AnomalyAlert(
+                symbol=symbol, alert_type="resonance_down", session="regular",
+                level="warning",
+                reason=f"📉 多框架共振看跌 ({frames_str}){'·放量' if vol_frames else ''}",
+                current_price=price, trigger_value=min_frames, metric_value=len(down_frames),
+            ))
+
+        return alerts
+
     # ── 辅助 ──
 
     @staticmethod

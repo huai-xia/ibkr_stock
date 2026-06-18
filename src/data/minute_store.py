@@ -171,6 +171,71 @@ class MinuteStore:
         df = self.load_1min()
         return len(df) if df is not None else 0
 
+    # ------------------------------------------------------------------
+    # L1 多时间框架聚合 (从1min → 3/5/15/30min)
+    # ------------------------------------------------------------------
+
+    AGGREGATE_PERIODS = [3, 5, 15, 30]
+
+    def aggregate(self, period_minutes: int = 5) -> Optional[pd.DataFrame]:
+        """
+        从1分钟线聚合成更长时间框架的K线
+
+        Args:
+            period_minutes: 目标周期 (3/5/15/30 分钟)
+
+        Returns:
+            OHLCV DataFrame，索引为聚合后的时间戳
+        """
+        df = self.load_1min()
+        if df is None or df.empty:
+            return None
+        if len(df) < period_minutes:
+            return None
+
+        # 确保有时间戳列用于分组
+        if "timestamp" not in df.columns:
+            return None
+
+        # 按 period_minutes 分组
+        df = df.copy()
+        df["group"] = df.index // period_minutes
+
+        agg = df.groupby("group").agg(
+            timestamp=("timestamp", "first"),
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        ).reset_index(drop=True)
+
+        return agg
+
+    def aggregate_all(self) -> dict[int, pd.DataFrame]:
+        """聚合所有时间框架"""
+        results = {}
+        for p in self.AGGREGATE_PERIODS:
+            df = self.aggregate(p)
+            if df is not None:
+                results[p] = df
+        return results
+
+    def save_aggregated(self):
+        """聚合并保存到 L1 文件"""
+        for p in self.AGGREGATE_PERIODS:
+            df = self.aggregate(p)
+            if df is not None and not df.empty:
+                path = BASE_DIR / f"{self.symbol}_{p}min.parquet"
+                df.to_parquet(path, index=False)
+
+    def load_aggregated(self, period_minutes: int) -> Optional[pd.DataFrame]:
+        """加载已聚合的多框架数据"""
+        path = BASE_DIR / f"{self.symbol}_{period_minutes}min.parquet"
+        if path.exists():
+            return pd.read_parquet(path)
+        return None
+
 
 # ── 批量操作 ──
 

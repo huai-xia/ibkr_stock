@@ -95,6 +95,10 @@ def main():
     log(f"   持仓: (从IBKR获取) | 自选: {len(watchlist)}只")
     log(f"   Ctrl+C 停止")
 
+    # 连接状态追踪
+    ibkr_was_down = False
+    futu_was_down = False
+
     iteration = 0
 
     while running:
@@ -102,6 +106,34 @@ def main():
         log(f"🔍 第 {iteration} 次检查")
 
         ib = None
+        try:
+            # ── 连接健康检查 ──
+            # 1. IBKR
+            ibkr_ok = _check_ibkr(args.host, args.port)
+            if not ibkr_ok:
+                if not ibkr_was_down:
+                    log("  ❌ IBKR Gateway 连接失败！")
+                    email_parts.append("- ❌ IBKR Gateway 连接失败，无法获取持仓和行情数据")
+                    ibkr_was_down = True
+            elif ibkr_was_down:
+                log("  ✅ IBKR Gateway 连接恢复")
+                email_parts.append("- ✅ IBKR Gateway 连接已恢复")
+                ibkr_was_down = False
+
+            # 2. 富途
+            futu_ok = _check_futu()
+            if not futu_ok:
+                if not futu_was_down:
+                    log("  ❌ 富途 OpenD 连接失败！")
+                    email_parts.append("- ❌ 富途 OpenD 连接失败，夜盘/盘前数据不可用")
+                    futu_was_down = True
+            elif futu_was_down:
+                log("  ✅ 富途 OpenD 连接恢复")
+                email_parts.append("- ✅ 富途 OpenD 连接已恢复")
+                futu_was_down = False
+        except:
+            pass
+
         try:
             # 连接
             cm = ConnectionManager(host="127.0.0.1", port=args.port, client_id=1, max_retries=3)
@@ -335,22 +367,24 @@ def main():
                         _update_active_alerts(email_parts)
 
                         if _should_send_alert(email_parts):
-                            # 组装邮件：本次新告警 + 所有仍在活跃的旧告警
+                            # 组装邮件：去重合并
                             all_parts = list(email_parts)
-                            seen = set()
+                            seen_texts = set()
                             for p in all_parts:
-                                seen.add(p[:40])
+                                # 用告警核心文本做去重键（去掉前缀符号）
+                                text = p.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ").strip()
+                                if len(text) > 10:
+                                    seen_texts.add(text[:60])
                             for alert_key, alert_text in _active_alerts.items():
-                                if alert_key not in seen:
+                                dedup_text = alert_text.strip("-⚠️🚫🎯📌🔔🔴🟡🟢📉📈➡️⚡💡* ")
+                                if dedup_text[:60] not in seen_texts:
                                     all_parts.append(f"- {alert_text}")
-                                    seen.add(alert_key)
+                                    seen_texts.add(dedup_text[:60])
 
                             # ── 写入当日告警文件 ──
                             _write_alerts_file(all_parts)
 
-                            email_body = f"## 📊 IBKR 监控报告\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')} (美东)\n\n"
-                            email_body += "\n".join(all_parts)
-                            email_body += "\n---\n*🤖 监控守护进程自动推送*"
+                            email_body = _build_html_email(all_parts)
 
                             has_critical = any(
                                 "跌破" in p or "🚫" in p for p in all_parts
@@ -401,12 +435,32 @@ def main():
                 except Exception as e:
                     logger.debug(f"MDP 异常检测失败: {e}")
 
+                # ── L1 多框架共振 ──
+                resonance_alerts = []
+                try:
+                    for sym in all_syms[:10]:  # 聚合计算较重，限制数量
+                        ms = MinuteStore(sym)
+                        agg = ms.aggregate_all()
+                        if len(agg) >= 2:  # 至少需要2个框架
+                            ra = detector.detect_resonance(sym, agg)
+                            if ra:
+                                resonance_alerts.extend(ra)
+                                ms.save_aggregated()  # 保存聚合结果
+                except Exception as e:
+                    logger.debug(f"共振检测失败: {e}")
+
+                if resonance_alerts:
+                    for a in resonance_alerts[:3]:
+                        log(f"  {a.reason}")
+                    for a in resonance_alerts:
+                        email_parts.append(f"- {a.reason}")
+                    anomaly_alerts.extend(resonance_alerts)
+
                 if anomaly_alerts:
                     critical = [a for a in anomaly_alerts if a.level == "critical"]
                     warnings = [a for a in anomaly_alerts if a.level == "warning"]
                     for a in (critical[:3] + warnings[:3]):
                         log(f"  {a.reason}")
-                    # 加入邮件
                     for a in anomaly_alerts:
                         email_parts.append(f"- {a.reason}")
                 else:
@@ -646,6 +700,69 @@ def _write_alerts_file(all_parts: list[str]):
         f.write(f"[{ts}] 告警文件已更新 ({len(_active_alerts)}条活跃)\n")
 
 
+def _build_html_email(all_parts: list[str]) -> str:
+    """构建简洁HTML邮件（无Markdown标记）"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 分离持仓告警和自选异动
+    position_lines = []
+    watchlist_lines = []
+
+    for line in all_parts:
+        stripped = line.strip("- ")
+        if any(kw in stripped for kw in ["止损", "止盈", "加仓", "减仓", "UNM", "MRAAY"]):
+            position_lines.append(stripped)
+        else:
+            watchlist_lines.append(stripped)
+
+    html = f"""<html><body style="font-family: -apple-system, Arial, sans-serif; max-width: 600px;">
+<p style="color: #666; font-size: 12px;">IBKR 监控报告 · {now} (美东)</p>
+"""
+
+    if position_lines:
+        html += '<div style="background: #fff3f0; border-left: 3px solid #e74c3c; padding: 12px; margin: 8px 0;">'
+        html += '<p style="font-weight: bold; color: #c0392b; margin: 0 0 8px 0;">🛡️ 持仓告警</p>'
+        for line in position_lines:
+            html += f'<p style="margin: 4px 0; font-size: 14px;">{line}</p>'
+        html += '</div>'
+
+    if watchlist_lines:
+        html += '<div style="background: #f8f9fa; border-left: 3px solid #3498db; padding: 12px; margin: 8px 0;">'
+        html += '<p style="font-weight: bold; color: #2980b9; margin: 0 0 8px 0;">📡 自选股异动</p>'
+        for line in watchlist_lines[:8]:
+            html += f'<p style="margin: 4px 0; font-size: 14px;">{line}</p>'
+        html += '</div>'
+
+    html += '<p style="color: #aaa; font-size: 11px; margin-top: 16px;">🤖 监控守护进程自动推送</p>'
+    html += '</body></html>'
+
+    return html
+
+
+def _check_ibkr(host: str, port: int) -> bool:
+    """检查 IBKR Gateway 是否在线"""
+    try:
+        from src.core.connection import ConnectionManager
+        cm = ConnectionManager(host=host, port=port, client_id=1, max_retries=1)
+        ib = cm.connect()
+        ib.disconnect()
+        return True
+    except:
+        return False
+
+
+def _check_futu() -> bool:
+    """检查富途 OpenD 是否在线"""
+    try:
+        from futu import OpenQuoteContext, RET_OK
+        ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+        ret, _ = ctx.get_global_state()
+        ctx.close()
+        return ret == RET_OK
+    except:
+        return False
+
+
 def _send_email(subject: str, body: str) -> bool:
     """发送告警邮件"""
     try:
@@ -660,7 +777,7 @@ def _send_email(subject: str, body: str) -> bool:
             smtp_port=int(get_env("SMTP_PORT", "587")),
             user=smtp_user, password=smtp_password,
         )
-        return notifier.send(subject, body.replace("\n", "<br>"), html=True)
+        return notifier.send(subject, body, html=True)
     except:
         return False
 
