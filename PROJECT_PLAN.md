@@ -576,7 +576,7 @@ src/analysis/signal_engine.py  ← 统一信号引擎
 
 | 优先级 | 项目 | 文档 |
 |:--:|------|------|
-| 1 | **数据架构升级** — 分钟级数据 + 短时异常检测 | [📋 数据架构计划](docs/DATA_ARCHITECTURE.md) |
+| 1 | **Market Data Pipeline** — 市场数据管线 (多时间框架+增量特征+异常检测) | [📋 MDP 计划](docs/MARKET_DATA_PIPELINE.md) |
 | 2 | 信号引擎独立化 + 量化算法(ATR/HMM/Hawkes等) | |
 | 3 | Paper Trading 验证(等账户开通) | |
 | 4 | macOS GUI 桌面应用(启动/停止/告警面板) | |
