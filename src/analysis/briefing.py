@@ -123,17 +123,38 @@ class DailyBriefing:
                 lines.append("")
                 return lines
 
-            lines.append(f"| 股票 | 持仓 | 成本 | 现价 | 浮动盈亏 | 止损 | 止盈 | 日线信号 |")
-            lines.append(f"|------|------|------|------|----------|------|------|----------|")
+            lines.append(f"| 股票 | 持仓 | 成本 | 现价 | 浮动盈亏 | 🛑止损 | 🎯止盈 | 加仓 | 减仓 | 信号 |")
+            lines.append(f"|------|------|------|------|----------|--------|--------|------|------|------|")
 
             monitor = PositionMonitor(self._ib)
             snapshots = monitor.snapshot()
+
+            # 加载策略文件中的自定义字段
+            strategy_data = {}
+            try:
+                from src.analysis.portfolio_strategy import STRATEGY_FILE
+                import yaml
+                if STRATEGY_FILE.exists():
+                    with open(STRATEGY_FILE) as f:
+                        strategy_data = yaml.safe_load(f) or {}
+            except:
+                pass
+            strat_holdings = strategy_data.get("holdings", {})
 
             for s in snapshots:
                 sym = s["symbol"]
                 pnl_str = f"${s.get('pnl', 0):+.0f}" if s.get('pnl') else "—"
                 stop_str = f"${s['stop']:.2f}" if s.get('stop') else "—"
                 target_str = f"${s['target']:.2f}" if s.get('target') else "—"
+
+                # 策略文件中的自定义值优先
+                sh = strat_holdings.get(sym, {})
+                add_str = f"${sh['add_on_dip']:.2f}" if sh.get("add_on_dip") else "—"
+                reduce_str = f"${sh['reduce_on_rip']:.2f}" if sh.get("reduce_on_rip") else "—"
+                if sh.get("stop_loss") and sh["stop_loss"] != s.get("stop"):
+                    stop_str = f"${sh['stop_loss']:.2f}*"
+                if sh.get("take_profit") and sh["take_profit"] != s.get("target"):
+                    target_str = f"${sh['take_profit']:.2f}*"
 
                 # 日线信号
                 sig_text = "—"
@@ -143,13 +164,14 @@ class DailyBriefing:
                         df = add_all(df)
                         sigs = self._detector.scan(sym, df)
                         if sigs:
-                            sig_text = sigs[0].reason[:30]
+                            sig_text = sigs[0].reason[:25]
                 except:
                     pass
 
                 lines.append(
                     f"| {sym} | {s['shares']:.0f}股 | ${s['entry']:.2f} | "
-                    f"${s['current']:.2f} | {pnl_str} | {stop_str} | {target_str} | {sig_text} |"
+                    f"${s['current']:.2f} | {pnl_str} | {stop_str} | {target_str} | "
+                    f"{add_str} | {reduce_str} | {sig_text} |"
                 )
 
             total_pnl = sum(s.get("pnl", 0) for s in snapshots)

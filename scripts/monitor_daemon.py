@@ -27,7 +27,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.connection import ConnectionManager
-from src.analysis.monitor import PositionMonitor
+from src.analysis.monitor import PositionMonitor, PositionAlert
 from src.analysis.exit_strategy import ExitStrategyEngine
 from src.analysis.stock_data import StockDataManager
 from src.data.price_validator import PriceValidator
@@ -121,6 +121,13 @@ def main():
                 log(f"  {s['symbol']}: ${s['current']:.2f} {pnl_str}{extra}")
 
             # 处理告警
+            # ── 策略文件检查（加减仓触发）──
+            strategy_alerts = _check_strategy_triggers()
+            if strategy_alerts:
+                alerts.extend(strategy_alerts)
+                for sa in strategy_alerts:
+                    log(f"  📌 {sa.message}")
+
             if alerts:
                 log(f"  ⚠️ {len(alerts)} 条告警!")
                 for a in alerts:
@@ -462,6 +469,65 @@ def _send_email(subject: str, body: str) -> bool:
         return notifier.send(subject, body.replace("\n", "<br>"), html=True)
     except:
         return False
+
+
+def _check_strategy_triggers() -> list:
+    """检查持仓策略文件中的加减仓触发条件"""
+    from src.analysis.portfolio_strategy import STRATEGY_FILE
+    import yaml
+
+    if not STRATEGY_FILE.exists():
+        return []
+
+    try:
+        with open(STRATEGY_FILE) as f:
+            data = yaml.safe_load(f) or {}
+    except:
+        return []
+
+    holdings = data.get("holdings", {})
+    alerts = []
+
+    for sym, h in holdings.items():
+        current = h.get("current_price", 0)
+        add_price = h.get("add_on_dip")
+        reduce_price = h.get("reduce_on_rip")
+        stop = h.get("stop_loss", 0)
+        target = h.get("take_profit", 0)
+
+        if current <= 0:
+            continue
+
+        # 加仓触发
+        if add_price and add_price > 0 and current <= add_price:
+            alerts.append(PositionAlert(
+                symbol=sym, alert_type="add_position", level="info",
+                current_price=current, threshold_price=add_price,
+                distance_pct=round((current - add_price) / current * 100, 1),
+                message=f"📌 {sym} 触及加仓价 ${add_price:.2f}！现价 ${current:.2f}",
+                timestamp=datetime.now().strftime("%H:%M:%S"),
+            ))
+        # 接近加仓
+        elif add_price and add_price > 0 and current <= add_price * 1.03:
+            alerts.append(PositionAlert(
+                symbol=sym, alert_type="near_add", level="info",
+                current_price=current, threshold_price=add_price,
+                distance_pct=round((add_price - current) / current * 100, 1),
+                message=f"🔔 {sym} 接近加仓价 ${add_price:.2f}（现价 ${current:.2f}，差 {(add_price-current)/current*100:.1f}%）",
+                timestamp=datetime.now().strftime("%H:%M:%S"),
+            ))
+
+        # 减仓触发
+        if reduce_price and reduce_price > 0 and current >= reduce_price:
+            alerts.append(PositionAlert(
+                symbol=sym, alert_type="reduce_position", level="warning",
+                current_price=current, threshold_price=reduce_price,
+                distance_pct=round((current - reduce_price) / reduce_price * 100, 1),
+                message=f"📌 {sym} 触及减仓价 ${reduce_price:.2f}！现价 ${current:.2f}",
+                timestamp=datetime.now().strftime("%H:%M:%S"),
+            ))
+
+    return alerts
 
 
 if __name__ == "__main__":
