@@ -317,20 +317,34 @@ def main():
                         email_parts.append("")
 
                     if email_parts:
-                        # ── 冷却检查：同一告警 30 分钟内不重复发送 ──
+                        # ── 更新活跃告警池 + 冷却检查 ──
+                        _update_active_alerts(email_parts)
+
                         if _should_send_alert(email_parts):
+                            # 邮件包含：本次新告警 + 所有仍在活跃的旧告警
+                            all_parts = list(email_parts)  # 本次
+
+                            # 补上活跃告警中的其他条目（去重）
+                            seen = set()
+                            for p in all_parts:
+                                seen.add(p[:40])
+                            for alert_key, alert_text in _active_alerts.items():
+                                if alert_key not in seen:
+                                    all_parts.append(f"- {alert_text}")
+                                    seen.add(alert_key)
+
                             email_body = f"## 📊 IBKR 监控报告\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')} (美东)\n\n"
-                            email_body += "\n".join(email_parts)
+                            email_body += "\n".join(all_parts)
                             email_body += "\n---\n*🤖 监控守护进程自动推送*"
 
                             has_critical = any(
-                                "跌破" in p or "🚫" in p for p in email_parts
+                                "跌破" in p or "🚫" in p for p in all_parts
                             )
                             subject = "🚨 IBKR 监控告警" if has_critical else "📊 IBKR 监控报告"
                             _send_email(subject, email_body)
-                            log(f"  📧 监控报告已推送")
+                            log(f"  📧 监控报告已推送 (活跃告警: {len(_active_alerts)}条)")
                         else:
-                            log(f"  ⏳ 告警冷却中，跳过推送")
+                            log(f"  ⏳ 告警冷却中 (活跃: {len(_active_alerts)}条)，跳过推送")
 
                 else:
                     log(f"  📡 自选股: 短线无异常信号")
@@ -456,75 +470,86 @@ def _check_news_for_symbol(symbol: str) -> list[str]:
         return []
 
 
-# ── 告警冷却：防止同一事件反复发送邮件 ──
-_alert_cooldown: dict = {}  # key: "symbol|alert_type" → value: last_send_timestamp
+# ── 告警冷却 + 活跃告警跟踪 ──
+_alert_cooldown: dict = {}  # key: "symbol|alert_type" → (last_send_timestamp, severity)
+_active_alerts: dict = {}   # 当前活跃的所有告警（所有检查周期累积）
 COOLDOWN_SECONDS = 1800  # 30 分钟冷却
 
 
+def _update_active_alerts(email_parts: list[str]):
+    """更新活跃告警池：本次触发的加入，本次未出现的清理"""
+    global _active_alerts
+
+    # 将本次的告警加入活跃池
+    for line in email_parts:
+        sym, alert_type, _ = _parse_alert_line(line)
+        if sym and alert_type:
+            key = f"{sym}|{alert_type}"
+            _active_alerts[key] = line.strip("- ")
+
+    # 清理已消失的告警（本次email_parts里没有=告警已解除）
+    current_keys = set()
+    for line in email_parts:
+        sym, alert_type, _ = _parse_alert_line(line)
+        if sym and alert_type:
+            current_keys.add(f"{sym}|{alert_type}")
+    # 只清理持仓相关的（自选股异动每次都变）
+    stale = [k for k in _active_alerts if k not in current_keys and "sharp" not in k]
+    for k in stale:
+        del _active_alerts[k]
+
+
+def _parse_alert_line(line: str) -> tuple[str, str, str]:
+    """从告警行提取 (symbol, alert_type, severity)"""
+    sym = ""
+    alert_type = ""
+    severity = "warning"
+
+    for word in line.replace(":", "").replace("⚠️", "").replace("🚫", "").replace("🎯", "").replace("📌", "").replace("🟢", "").replace("🟡", "").replace("🔴", "").replace("🔔", "").split():
+        w = word.strip("$").strip(".")
+        if w.isupper() and 2 <= len(w) <= 5 and w not in ("STRONG", "MEDIUM", "WEAK", "HIGH", "LOW"):
+            sym = w
+            break
+
+    if "跌破" in line or "🚫" in line or "触发止损" in line:
+        alert_type, severity = "stop_loss", "critical"
+    elif "接近止损" in line or "距离止损" in line:
+        alert_type, severity = "stop_loss", "warning"
+    elif "达到" in line and "止盈" in line:
+        alert_type, severity = "take_profit", "critical"
+    elif "接近止盈" in line or "距离止盈" in line or "距目标" in line:
+        alert_type, severity = "take_profit", "warning"
+    elif "加仓价" in line or "触及加仓" in line:
+        alert_type, severity = "add_position", "critical"
+    elif "接近加仓" in line:
+        alert_type, severity = "add_position", "warning"
+    elif "减仓价" in line or "触及减仓" in line:
+        alert_type, severity = "reduce_position", "critical"
+    elif "暴跌" in line or "急跌" in line:
+        alert_type, severity = "sharp_drop", "critical"
+    elif "急涨" in line or "暴涨" in line:
+        alert_type, severity = "sharp_rise", "critical"
+
+    return sym, alert_type, severity
+
+
 def _should_send_alert(email_parts: list[str]) -> bool:
-    """检查是否应该发送告警（冷却期外）"""
+    """检查是否应该发送告警（冷却期外/级别升级时立即发送）"""
     global _alert_cooldown
     now = datetime.now().timestamp()
 
-    # 提取告警中的股票+类型+级别
     for line in email_parts:
-        sym = ""
-        alert_type = ""
-        severity = "warning"  # 默认
-
-        # 提取股票代码（第一个大写短词）
-        for word in line.replace(":", "").replace("⚠️","").replace("🚫","").replace("🎯","").replace("📌","").replace("🟢","").replace("🟡","").replace("🔴","").replace("🔔","").split():
-            w = word.strip("$").strip(".")
-            if w.isupper() and 2 <= len(w) <= 5 and w not in ("STRONG", "MEDIUM", "WEAK", "HIGH", "LOW"):
-                sym = w
-                break
-
-        # 识别告警类型和严重程度
-        if "跌破" in line or "🚫" in line or "触发止损" in line:
-            alert_type = "stop_loss"
-            severity = "critical"
-        elif "接近止损" in line or "距离止损" in line:
-            alert_type = "stop_loss"
-            severity = "warning"
-        elif "达到" in line or "止盈目标" in line:
-            alert_type = "take_profit"
-            severity = "critical"
-        elif "接近止盈" in line or "距离止盈" in line or "距目标" in line:
-            alert_type = "take_profit"
-            severity = "warning"
-        elif "加仓价" in line or "触及加仓" in line:
-            alert_type = "add_position"
-            severity = "critical"
-        elif "接近加仓" in line:
-            alert_type = "add_position"
-            severity = "warning"
-        elif "减仓价" in line or "触及减仓" in line:
-            alert_type = "reduce_position"
-            severity = "critical"
-        elif "暴跌" in line or "急跌" in line:
-            alert_type = "sharp_drop"
-            severity = "critical"
-        elif "急涨" in line or "暴涨" in line:
-            alert_type = "sharp_rise"
-            severity = "critical"
-        elif "跳空" in line:
-            alert_type = "gap"
-            severity = "warning"
-        else:
-            continue
-
+        sym, alert_type, severity = _parse_alert_line(line)
         if not sym or not alert_type:
             continue
 
-        # 关键：严重程度变了 → 立即发送
         key = f"{sym}|{alert_type}"
         last_sent, last_severity = _alert_cooldown.get(key, (0, ""))
 
         if severity == "critical" and last_severity == "warning":
-            # 升级告警：冷却作废，立即发送
-            pass
+            pass  # 级别升级，冷却作废
         elif now - last_sent < COOLDOWN_SECONDS:
-            return False  # 冷却中
+            return False
 
         _alert_cooldown[key] = (now, severity)
 
