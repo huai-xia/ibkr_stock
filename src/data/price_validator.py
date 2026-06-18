@@ -104,19 +104,22 @@ class PriceValidator:
             result.warning = f"所有渠道均无法获取 {symbol} 的实时价格"
             return result
 
-        # ── 取价格 ──
+        # ── 取价格：非盘中用富途，盘中多源交叉验证 ──
         futu_d = details.get("futu", {})
         non_futu_prices = [v["price"] for k, v in details.items() if k != "futu"]
 
-        # 判断是否延长时段：富途价与其他源偏差 > 2% 即为延长时段
         if futu_d and non_futu_prices:
             avg_other = sum(non_futu_prices) / len(non_futu_prices)
             deviation = abs(futu_d["price"] - avg_other) / avg_other if avg_other > 0 else 0
             if deviation > 0.02:
-                # 延长时间段：富途是最可靠的数据源
+                # 非盘中（Yahoo/Finnhub 仍显示昨收）：直接信任富途
                 result.price = round(futu_d["price"], 2)
+                result.is_realtime = True
             else:
-                result.price = round(sorted([futu_d["price"]] + non_futu_prices)[len(non_futu_prices) // 2], 2)
+                # 盘中：多源取中位数
+                all_p = [futu_d["price"]] + non_futu_prices
+                all_p.sort()
+                result.price = round(all_p[len(all_p) // 2], 2) if len(all_p) % 2 == 1 else round((all_p[len(all_p)//2-1] + all_p[len(all_p)//2]) / 2, 2)
         else:
             sorted_prices = sorted(prices.values())
             n = len(sorted_prices)
@@ -325,12 +328,16 @@ class PriceValidator:
                     price = last
 
                 if price > 0:
+                    # last_price = 最近一次常规交易收盘价（作为涨跌基准）
+                    # prev_close_price = 前一交易日收盘（跨日后可能滞后）
+                    reference_close = last if last > 0 else prev
                     return {
                         "price": round(price, 2),
                         "bid": round(bid, 2) if bid else 0,
                         "ask": round(ask, 2) if ask else 0,
                         "volume": row.get('volume', 0),
                         "is_realtime": True,
+                        "prev_close_price": round(reference_close, 2),
                         "pre_market_price": round(pre, 2) if pre else 0,
                         "post_market_price": round(after, 2) if after else 0,
                         "overnight_price": round(overnight, 2) if overnight else 0,
