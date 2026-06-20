@@ -623,7 +623,8 @@ src/analysis/signal_engine.py  ← 统一信号引擎
 
 | 优先级 | 项目 | 文档 |
 |:--:|------|------|
-| 1 | **Market Data Pipeline** — 二期精进 | [📋 MDP 计划](docs/MARKET_DATA_PIPELINE.md) |
+| 1 | **交易策略体系** — 短线/中线/长线/定投分层架构 | [📋 策略规划](docs/TRADING_STRATEGIES.md) |
+| 2 | **Market Data Pipeline** — 二期精进 | [📋 MDP 计划](docs/MARKET_DATA_PIPELINE.md) |
 | — | **告警触发总览** — 28种触发条件+冷却规则 | [📋 告警文档](docs/ALERT_TRIGGERS.md) |
 | 2 | 信号引擎独立化 + 量化算法(ATR/HMM/Hawkes等) | |
 | 3 | Paper Trading 验证(等账户开通) | |
