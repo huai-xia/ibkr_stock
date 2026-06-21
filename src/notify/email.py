@@ -39,40 +39,69 @@ class EmailNotifier:
         self._port = smtp_port
         self._user = user
         self._password = password
-        self._to = to_email or user  # 默认发给自己
+        self._to = to_email or user
         self._enabled = enabled
+        self._server = None  # 持久连接
 
     @property
     def is_configured(self) -> bool:
         return bool(self._user and self._password)
 
-    def send(self, subject: str, body: str, html: bool = False) -> bool:
-        """发送邮件"""
-        if not self._enabled:
-            return False
-        if not self.is_configured:
-            logger.debug("邮件未配置，跳过发送")
-            return False
-
+    def _connect(self):
+        """建立持久SMTP连接（复用避免QQ限流）"""
+        if self._server is not None:
+            try:
+                self._server.noop()
+                return True
+            except:
+                self._server = None
         try:
-            msg = MIMEMultipart()
-            msg["From"] = self._user
-            msg["To"] = self._to
-            msg["Subject"] = f"[IBKR] {subject}"
-
-            content_type = "html" if html else "plain"
-            msg.attach(MIMEText(body, content_type, "utf-8"))
-
-            with smtplib.SMTP(self._host, self._port, timeout=10) as server:
-                server.starttls()
-                server.login(self._user, self._password)
-                server.sendmail(self._user, self._to, msg.as_string())
-
-            logger.debug("邮件发送成功: %s", subject)
+            self._server = smtplib.SMTP(self._host, self._port, timeout=10)
+            self._server.starttls()
+            self._server.login(self._user, self._password)
             return True
         except Exception as e:
-            logger.error("邮件发送失败: %s", e)
+            self._server = None
+            logger.debug("SMTP连接失败: %s", e)
             return False
+
+    def _disconnect(self):
+        """关闭持久连接"""
+        if self._server:
+            try:
+                self._server.quit()
+            except:
+                pass
+            self._server = None
+
+    def send(self, subject: str, body: str, html: bool = False, retries: int = 2) -> bool:
+        """发送邮件（含重试，复用连接避免QQ限流）"""
+        if not self._enabled or not self.is_configured:
+            return False
+
+        import time
+        for attempt in range(retries + 1):
+            try:
+                if not self._connect():
+                    if attempt < retries:
+                        time.sleep(3 * (attempt + 1))  # 退避: 3s, 6s
+                    continue
+
+                msg = MIMEMultipart()
+                msg["From"] = self._user
+                msg["To"] = self._to
+                msg["Subject"] = f"[IBKR] {subject}"
+                content_type = "html" if html else "plain"
+                msg.attach(MIMEText(body, content_type, "utf-8"))
+                self._server.sendmail(self._user, self._to, msg.as_string())
+                logger.debug("邮件发送成功: %s", subject)
+                return True
+            except Exception as e:
+                logger.debug("邮件发送失败(尝试%d): %s", attempt + 1, str(e)[:80])
+                self._disconnect()
+                if attempt < retries:
+                    time.sleep(3 * (attempt + 1))
+        return False
 
     def trade_filled(self, symbol: str, action: str, quantity: float,
                      price: float, pnl: float = None) -> bool:
