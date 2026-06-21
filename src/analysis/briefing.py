@@ -43,8 +43,12 @@ class DailyBriefing:
     # 主入口
     # ------------------------------------------------------------------
 
-    def generate(self) -> str:
-        """生成完整收盘简报"""
+    def generate(self, for_friend: bool = False) -> str:
+        """生成完整收盘简报
+
+        Args:
+            for_friend: True 时剥离持仓/风控信息，仅保留市场+自选+新闻+日历
+        """
         now = datetime.now()
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
 
@@ -59,8 +63,9 @@ class DailyBriefing:
         # 1. 大盘
         lines.extend(self._section_market())
 
-        # 2. 持仓日终报告
-        lines.extend(self._section_holdings())
+        # 2. 持仓日终报告（好友不可见）
+        if not for_friend:
+            lines.extend(self._section_holdings())
 
         # 3. 自选股日线信号
         lines.extend(self._section_watchlist())
@@ -71,14 +76,18 @@ class DailyBriefing:
         # 5. 明日财经日历
         lines.extend(self._section_calendar())
 
-        # 6. PDT + 风控提醒
-        lines.extend(self._section_risk())
+        # 6. PDT + 风控提醒（好友不可见 — 含账户净值/可用资金）
+        if not for_friend:
+            lines.extend(self._section_risk())
 
         # 7. 操作建议
         lines.extend(self._section_advice())
 
         lines.append("---")
-        lines.append(f"*🤖 本简报由 IBKR 交易助手自动生成 · {now.strftime('%H:%M:%S')}*")
+        footer = f"*🤖 本简报由 IBKR 交易助手自动生成 · {now.strftime('%H:%M:%S')}*"
+        if for_friend:
+            footer += "\n\n*🔒 简报已自动隐藏持仓/风控等隐私信息*"
+        lines.append(footer)
 
         return "\n".join(lines)
 
@@ -388,6 +397,7 @@ class DailyBriefing:
     # ------------------------------------------------------------------
 
     def push(self, report: str = "", subject: str = "") -> bool:
+        """推送到主账号（完整版，含持仓/风控）"""
         if not report:
             return False
 
@@ -404,5 +414,29 @@ class DailyBriefing:
 
         now = datetime.now()
         subj = subject or f"IBKR 收盘简报 — {now.strftime('%Y-%m-%d')}"
+
+        return notifier.send(subj, report.replace("\n", "<br>"), html=True)
+
+    def push_friend(self) -> bool:
+        """推送到好友（精简版，无持仓/风控，使用独立SMTP）"""
+        friend_user = get_env("FRIEND_SMTP_USER", "")
+        friend_password = get_env("FRIEND_SMTP_PASSWORD", "")
+        if not friend_user or not friend_password:
+            logger.debug("好友SMTP未配置，跳过推送")
+            return False
+
+        # 生成好友版简报
+        report = self.generate(for_friend=True)
+        if not report:
+            return False
+
+        notifier = EmailNotifier(
+            smtp_host=get_env("SMTP_HOST", "smtp.qq.com"),
+            smtp_port=int(get_env("SMTP_PORT", "587")),
+            user=friend_user, password=friend_password,
+        )
+
+        now = datetime.now()
+        subj = f"📡 市场简报 — {now.strftime('%Y-%m-%d')}"
 
         return notifier.send(subj, report.replace("\n", "<br>"), html=True)

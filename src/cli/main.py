@@ -534,7 +534,13 @@ def cmd_briefing(args):
 
     if not args.no_push:
         ok = briefer.push(report)
-        print(f"  {'✓' if ok else '✗'} 简报送{'成功' if ok else '失败'}")
+        print(f"  {'✓' if ok else '✗'} 简报推主账号{'成功' if ok else '失败'}")
+
+    # 好友推送（精简版，无持仓/风控）
+    if args.friend:
+        print(f"  📡 推送好友精简版...")
+        ok_f = briefer.push_friend()
+        print(f"  {'✓' if ok_f else '✗'} 好友推送{'成功' if ok_f else '失败'}")
 
     # 预览关键数据
     for line in report.split("\n"):
@@ -829,8 +835,9 @@ def main():
     p_mon.add_argument("--max-iter", type=int, default=0, help="最大检查次数 (0=无限)")
 
     # briefing
-    p_brief = subparsers.add_parser("briefing", help="[简报] 每日交易简报 | 用法: briefing [--no-push]")
+    p_brief = subparsers.add_parser("briefing", help="[简报] 每日交易简报 | 用法: briefing [--no-push] [--friend]")
     p_brief.add_argument("--no-push", action="store_true", help="仅显示，不推送邮件")
+    p_brief.add_argument("--friend", action="store_true", help="同时推送精简版给好友（无持仓/风控信息）")
     p_brief.add_argument("--email-only", action="store_true", help="仅推送邮件，不终端显示")
 
     # portfolio-strategy
