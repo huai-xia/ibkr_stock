@@ -33,5 +33,9 @@ data/alerts_today.md
 com.ibkr.briefing.plist
 config/watchlist.yaml
 data/minutes/
+data/minutes_1m/
 data/features/
+data/hourly/
+data/minute_15/
 data/portfolio_strategy.yaml
+data/account_*/
