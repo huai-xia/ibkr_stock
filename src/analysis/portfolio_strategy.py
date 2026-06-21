@@ -2,7 +2,7 @@
 持仓策略管理
 本地缓存持仓的退出策略、加减仓规则，避免每次都调 API 重算
 
-文件: data/portfolio_strategy.yaml (不入 git)
+文件: data/account_{ID}/portfolio_strategy.yaml (不入 git)
 """
 
 import logging
@@ -12,9 +12,14 @@ from typing import Optional
 
 import yaml
 
+from src.config import get_account_dir
+
 logger = logging.getLogger(__name__)
 
-STRATEGY_FILE = Path("data/portfolio_strategy.yaml")
+
+def get_strategy_file_path() -> Path:
+    """获取当前账户的持仓策略文件路径"""
+    return get_account_dir() / "portfolio_strategy.yaml"
 
 
 class PortfolioStrategyManager:
@@ -140,11 +145,11 @@ class PortfolioStrategyManager:
 
     def load(self) -> dict:
         """加载本地策略文件"""
-        if not STRATEGY_FILE.exists():
+        if not get_strategy_file_path().exists():
             return {"holdings": {}}
 
         try:
-            with open(STRATEGY_FILE) as f:
+            with open(get_strategy_file_path()) as f:
                 data = yaml.safe_load(f) or {}
             return data
         except Exception as e:
@@ -153,8 +158,8 @@ class PortfolioStrategyManager:
 
     def _save(self, data: dict):
         """保存到本地"""
-        STRATEGY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STRATEGY_FILE, "w") as f:
+        get_strategy_file_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(get_strategy_file_path(), "w") as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     def update_holding(self, symbol: str, **kwargs):
@@ -233,7 +238,7 @@ class PortfolioStrategyManager:
             )
 
         lines.append("")
-        lines.append("💡 编辑策略: 直接修改 `data/portfolio_strategy.yaml`")
+        lines.append(f"💡 编辑策略: 直接修改 `{get_strategy_file_path()}`")
         lines.append("🔄 重新计算: `ibkr-stock --port 4002 portfolio-strategy --refresh`")
 
         return "\n".join(lines)

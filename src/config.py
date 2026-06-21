@@ -53,6 +53,22 @@ REMOTE_USER = get_env("REMOTE_USER", "your_username")
 REMOTE_DIR = get_env("REMOTE_DIR", "/home/your_username/project")
 
 
+def get_account_dir(account_id: str = None) -> Path:
+    """获取账户私有数据目录，自动创建
+
+    Args:
+        account_id: 账户号，默认从环境变量 IBKR_ACCOUNT_ID 获取
+
+    Returns:
+        Path like data/account_DUQ784596/
+    """
+    if account_id is None:
+        account_id = get_env("IBKR_ACCOUNT_ID", "unknown")
+    account_dir = ROOT_DIR / "data" / f"account_{account_id}"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    return account_dir
+
+
 def get_risk_config() -> dict:
     """获取风控配置（settings.yaml > risk_rules.yaml > 默认值）"""
     return {

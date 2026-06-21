@@ -38,13 +38,13 @@ from src.notify.email import EmailNotifier
 from src.trade.portfolio import Portfolio
 from src.analysis.signals import SignalDetector
 from src.strategy.indicators import add_all
-from src.config import get_env, FINNHUB_API_KEY
+from src.config import get_env, FINNHUB_API_KEY, get_account_dir
 import yaml
 
-# ── 状态文件 ──
-STATUS_FILE = Path("data/monitor_status.txt")
-ALERTS_FILE = Path("data/alerts_today.md")
-STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+# ── 状态文件（按账户隔离）──
+_account_dir = get_account_dir()
+STATUS_FILE = _account_dir / "monitor_status.txt"
+ALERTS_FILE = _account_dir / "alerts_today.md"
 
 running = True
 
@@ -964,14 +964,15 @@ def _send_email(subject: str, body: str) -> bool:
 
 def _check_strategy_triggers() -> list:
     """检查持仓策略文件中的加减仓触发条件"""
-    from src.analysis.portfolio_strategy import STRATEGY_FILE
+    from src.analysis.portfolio_strategy import get_strategy_file_path
     import yaml
 
-    if not STRATEGY_FILE.exists():
+    strategy_file = get_strategy_file_path()
+    if not strategy_file.exists():
         return []
 
     try:
-        with open(STRATEGY_FILE) as f:
+        with open(strategy_file) as f:
             data = yaml.safe_load(f) or {}
     except:
         return []

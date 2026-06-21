@@ -141,10 +141,11 @@ class DailyBriefing:
             # 加载策略文件中的自定义字段
             strategy_data = {}
             try:
-                from src.analysis.portfolio_strategy import STRATEGY_FILE
+                from src.analysis.portfolio_strategy import get_strategy_file_path
                 import yaml
-                if STRATEGY_FILE.exists():
-                    with open(STRATEGY_FILE) as f:
+                strategy_file = get_strategy_file_path()
+                if strategy_file.exists():
+                    with open(strategy_file) as f:
                         strategy_data = yaml.safe_load(f) or {}
             except:
                 pass

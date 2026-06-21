@@ -29,9 +29,14 @@ class TradeRecorder:
         summary = recorder.daily_summary()
     """
 
-    def __init__(self, db_path: str = "data/trade.db"):
+    def __init__(self, db_path: str = "data/trade.db", account_id: str = None):
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # 默认账户：参数 > 环境变量
+        if account_id is None:
+            from src.config import get_env
+            account_id = get_env("IBKR_ACCOUNT_ID", "")
+        self._account_id = account_id
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -145,6 +150,9 @@ class TradeRecorder:
         Returns:
             插入记录的 ID，如果 exec_id 已存在则返回 0
         """
+        # 未指定账户时使用默认账户
+        if not account:
+            account = self._account_id
         ts = timestamp or datetime.now().isoformat()
 
         with self._connect() as conn:
@@ -239,54 +247,99 @@ class TradeRecorder:
     # 统计
     # ------------------------------------------------------------------
 
-    def daily_summary(self, days: int = 7) -> list[dict]:
-        """每日交易汇总"""
+    def daily_summary(self, days: int = 7, account: str = None) -> list[dict]:
+        """每日交易汇总 (account=None=所有, ''=默认账户)"""
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        acct = self._resolve_account(account)
         with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT DATE(timestamp) as date,
-                          COUNT(*) as trade_count,
-                          SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades,
-                          SUM(pnl) as total_pnl,
-                          SUM(commission) as total_commission
-                   FROM trades
-                   WHERE status='FILLED' AND DATE(timestamp) >= ?
-                   GROUP BY DATE(timestamp)
-                   ORDER BY date DESC""",
-                (cutoff,),
-            ).fetchall()
+            if acct:
+                rows = conn.execute(
+                    """SELECT DATE(timestamp) as date,
+                              COUNT(*) as trade_count,
+                              SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades,
+                              SUM(pnl) as total_pnl,
+                              SUM(commission) as total_commission
+                       FROM trades
+                       WHERE status='FILLED' AND account=? AND DATE(timestamp) >= ?
+                       GROUP BY DATE(timestamp)
+                       ORDER BY date DESC""",
+                    (acct, cutoff),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT DATE(timestamp) as date,
+                              COUNT(*) as trade_count,
+                              SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades,
+                              SUM(pnl) as total_pnl,
+                              SUM(commission) as total_commission
+                       FROM trades
+                       WHERE status='FILLED' AND DATE(timestamp) >= ?
+                       GROUP BY DATE(timestamp)
+                       ORDER BY date DESC""",
+                    (cutoff,),
+                ).fetchall()
         return [dict(r) for r in rows]
 
-    def symbol_summary(self, days: int = 30) -> list[dict]:
-        """按股票汇总交易"""
+    def symbol_summary(self, days: int = 30, account: str = None) -> list[dict]:
+        """按股票汇总交易 (account=None=所有, ''=默认账户)"""
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        acct = self._resolve_account(account)
         with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT symbol,
-                          COUNT(*) as trades,
-                          SUM(pnl) as total_pnl,
-                          AVG(pnl) as avg_pnl,
-                          SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades
-                   FROM trades
-                   WHERE status='FILLED' AND DATE(timestamp) >= ?
-                   GROUP BY symbol
-                   ORDER BY total_pnl DESC""",
-                (cutoff,),
-            ).fetchall()
+            if acct:
+                rows = conn.execute(
+                    """SELECT symbol,
+                              COUNT(*) as trades,
+                              SUM(pnl) as total_pnl,
+                              AVG(pnl) as avg_pnl,
+                              SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades
+                       FROM trades
+                       WHERE status='FILLED' AND account=? AND DATE(timestamp) >= ?
+                       GROUP BY symbol
+                       ORDER BY total_pnl DESC""",
+                    (acct, cutoff),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT symbol,
+                              COUNT(*) as trades,
+                              SUM(pnl) as total_pnl,
+                              AVG(pnl) as avg_pnl,
+                              SUM(CASE WHEN is_day_trade=1 THEN 1 ELSE 0 END) as day_trades
+                       FROM trades
+                       WHERE status='FILLED' AND DATE(timestamp) >= ?
+                       GROUP BY symbol
+                       ORDER BY total_pnl DESC""",
+                    (cutoff,),
+                ).fetchall()
         return [dict(r) for r in rows]
 
-    def pnl_summary(self) -> dict:
-        """盈亏总览"""
+    def pnl_summary(self, account: str = None) -> dict:
+        """盈亏总览 (account=None=所有, ''=默认账户)"""
+        acct = self._resolve_account(account)
         with self._connect() as conn:
-            total = conn.execute(
-                "SELECT COUNT(*) as n, SUM(pnl) as total_pnl FROM trades WHERE status='FILLED'"
-            ).fetchone()
-            wins = conn.execute(
-                "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl > 0"
-            ).fetchone()
-            losses = conn.execute(
-                "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl < 0"
-            ).fetchone()
+            if acct:
+                total = conn.execute(
+                    "SELECT COUNT(*) as n, SUM(pnl) as total_pnl FROM trades WHERE status='FILLED' AND account=?",
+                    (acct,),
+                ).fetchone()
+                wins = conn.execute(
+                    "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl > 0 AND account=?",
+                    (acct,),
+                ).fetchone()
+                losses = conn.execute(
+                    "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl < 0 AND account=?",
+                    (acct,),
+                ).fetchone()
+            else:
+                total = conn.execute(
+                    "SELECT COUNT(*) as n, SUM(pnl) as total_pnl FROM trades WHERE status='FILLED'"
+                ).fetchone()
+                wins = conn.execute(
+                    "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl > 0"
+                ).fetchone()
+                losses = conn.execute(
+                    "SELECT COUNT(*) as n FROM trades WHERE status='FILLED' AND pnl < 0"
+                ).fetchone()
 
         total_n = total["n"] or 0
         win_n = wins["n"] or 0
@@ -299,6 +352,14 @@ class TradeRecorder:
             "win_rate": win_n / total_n if total_n > 0 else 0,
             "total_pnl": total["total_pnl"] or 0,
         }
+
+    def _resolve_account(self, account: str = None) -> str:
+        """解析账户参数: None=不限制, ''=默认账户, 'X'=指定账户"""
+        if account is None:
+            return ""  # 不限制
+        if account == "":
+            return self._account_id
+        return account
 
     # ------------------------------------------------------------------
     # PDT 日内交易计数
