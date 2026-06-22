@@ -1,0 +1,52 @@
+# ============================================
+# Top 5 实盘交易池 — 60天IBKR回测验证
+# 2026-06-22, Optuna优化参数
+# ============================================
+
+# 🥇 MVLL — +$1,074, 胜率67.6%, 日均+$17.9
+MVLL:
+  z_thresh: -2.1
+  rsi_thresh: 40
+  bb_prox: 0.007
+  atr_mult: 4.3
+  cool_min: 30
+
+# 🥈 SOXL — +$712, 胜率69.4%, 日均+$11.9
+SOXL:
+  z_thresh: -1.7
+  rsi_thresh: 29
+  bb_prox: 0.015
+  atr_mult: 4.8
+  cool_min: 30
+
+# 🥉 KORU — +$652, 胜率67.3%, 日均+$10.9
+KORU:
+  z_thresh: -2.2
+  rsi_thresh: 40
+  bb_prox: 0.005
+  atr_mult: 4.9
+  cool_min: 30
+
+# 4. WULF — +$583, 胜率75.5%, 日均+$9.7
+WULF:
+  z_thresh: -1.9
+  rsi_thresh: 41
+  bb_prox: 0.029
+  atr_mult: 5.0
+  cool_min: 29
+
+# 5. SNDK — +$450, 胜率67.2%, 日均+$7.5
+SNDK:
+  z_thresh: -2.5
+  rsi_thresh: 45
+  bb_prox: 0.015
+  atr_mult: 4.9
+  cool_min: 30
+
+# 共用参数
+shared:
+  sma_window: 20
+  ema_weight: 0.60
+  vwap_weight: 0.25
+  trend_slope: -0.007
+  capital_per_trade: 1000
