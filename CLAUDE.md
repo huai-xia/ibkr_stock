@@ -21,23 +21,32 @@
 | 意图 | 命令模板 |
 |------|----------|
 | 查看账户全貌 | `python3 -m src.cli.main --port <PORT> overview` |
-| 查看连接/余额 | `python3 -m src.cli.main --port <PORT> status` |
 | 实时报价 | `python3 -m src.cli.main --port <PORT> quote <SYMBOL>` |
-| 历史K线 | `python3 -m src.cli.main --port <PORT> history <SYMBOL> --days <N>` |
 | 查看持仓 | `python3 -m src.cli.main --port <PORT> portfolio` |
-| PDT 计数 | `python3 -m src.cli.main --port <PORT> pdt` |
 | 下单 | `python3 -m src.cli.main --port <PORT> order <buy/sell> <QTY> <SYMBOL> --type <TYPE> ...` |
-| 交易统计 | `python3 -m src.cli.main --port <PORT> trade-summary` |
-| 市场新闻 | `python3 -m src.cli.main news --holdings "<SYMBOLS>" --push` |
-| 策略回测 | `python3 -m src.cli.main --port <PORT> backtest <STRATEGY> <SYMBOL> --days <N>` |
+| 60天回测 | `python3 scripts/backtest_ibkr_60d.py` |
+| 参数优化 | `python3 scripts/optimize_params.py` |
+| 1min筛选 | `python3 scripts/screen_stocks_1min.py` |
+| IBKR拉取 | `python3 scripts/pull_ibkr_1min.py` |
+| 监控启动 | `python3 -u scripts/monitor_daemon.py --port 4003 --interval 300` |
+| 简报推送 | `python3 -m src.cli.main --port 4003 briefing [--friend]` |
 
 ### 端口规则
 
-- Paper Trading（模拟盘）：`--port 4001`
+- Paper Trading（模拟盘）：`--port 4003` (QQ占4001, 已迁移)
 - Live Trading（真实账户）：`--port 4002`
-- **用户说"真实账户""实盘""真钱"时，用 4002**
-- **用户说"模拟""测试""paper"时，用 4001**
+- **富途 OpenD**：端口 11111
 - **不确定时，必须询问用哪个端口！**
+
+### ⚠️ 网络问题
+- **QQ 不能开** — 占 4001 端口, Gateway 已迁到 4003
+- **Shadowrocket**: 需添加 `ibllc.com → DIRECT` 规则, 否则 IBKR 报 "different IP address"
+- **aTrust + Shadowrocket 冲突**: 运行 `sudo bash ~/.claude/scripts/fix-atrust-routing.sh`
+- **IB Gateway 登出再登入** 才能刷新 IP 会话
+
+### Top 5 交易池
+MVLL / SOXL / KORU / WULF / SNDK — 配置: `config/top5_live.yaml`
+每只有独立优化参数, 60天回测月均+$1,157
 
 ---
 
