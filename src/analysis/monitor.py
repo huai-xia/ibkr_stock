@@ -301,7 +301,7 @@ class PositionMonitor:
             print("\n👋 监控已停止")
 
     def push_alerts(self, alerts: list[PositionAlert]) -> bool:
-        """推送告警到邮箱"""
+        """推送告警到邮箱（多条股票预警合并为一封邮件）"""
         if not alerts:
             return True
 
@@ -317,9 +317,114 @@ class PositionMonitor:
             password=smtp_password,
         )
 
-        # 根据告警级别生成标题
-        has_critical = any(a.level == "critical" for a in alerts)
-        subject = "🚨 IBKR 持仓告警" if has_critical else "⚠️ IBKR 持仓提醒"
+        # === 构建合并邮件 ===
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        symbols = sorted(set(a.symbol for a in alerts))
+        n_critical = sum(1 for a in alerts if a.level == "critical")
+        n_warning = sum(1 for a in alerts if a.level == "warning")
+        n_info = sum(1 for a in alerts if a.level == "info")
 
-        body = self.format_alerts(alerts)
-        return notifier.send(subject, body.replace("\n", "<br>"), html=True)
+        # 标题：含股票数和关键级别
+        if n_critical > 0:
+            subject = f"🚨 IBKR 告警 — {len(symbols)}只股票 · {n_critical}条紧急"
+        elif n_warning > 0:
+            subject = f"⚠️ IBKR 预警 — {len(symbols)}只股票 · {n_warning}条警告"
+        else:
+            subject = f"📊 IBKR 提醒 — {len(symbols)}只股票接近目标"
+
+        # HTML 邮件正文
+        level_labels = []
+        if n_critical:
+            level_labels.append(f"🔴 紧急 {n_critical}")
+        if n_warning:
+            level_labels.append(f"🟡 警告 {n_warning}")
+        if n_info:
+            level_labels.append(f"🟢 提示 {n_info}")
+
+        # 按股票分组
+        by_symbol: dict[str, list[PositionAlert]] = {}
+        for a in alerts:
+            by_symbol.setdefault(a.symbol, []).append(a)
+
+        rows_html = ""
+        for sym in sorted(by_symbol.keys()):
+            stock_alerts = by_symbol[sym]
+            # 取该股票最严重的级别决定行底色
+            max_level = "critical" if any(a.level == "critical" for a in stock_alerts) else \
+                        "warning" if any(a.level == "warning" for a in stock_alerts) else "info"
+            bg = {"critical": "#fff0f0", "warning": "#fffbe6", "info": "#f0fff0"}[max_level]
+            emoji = {"critical": "🔴", "warning": "🟡", "info": "🟢"}[max_level]
+
+            for i, a in enumerate(stock_alerts):
+                level_tag = {"critical": "紧急", "warning": "警告", "info": "提示"}[a.level]
+                rows_html += f"""
+                <tr style="background:{bg}">
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold">
+                        {emoji if i == 0 else '&nbsp;&nbsp;&nbsp;'} {sym if i == 0 else ''}
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee">
+                        <span style="color:{'#d00' if a.level == 'critical' else '#e67e00' if a.level == 'warning' else '#27ae60'}">
+                            [{level_tag}]
+                        </span>
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee">
+                        现价 <b>${a.current_price:.2f}</b>
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee">
+                        阈值 <b>${a.threshold_price:.2f}</b>
+                    </td>
+                    <td style="padding:8px 12px;border-bottom:1px solid #eee">
+                        距阈值 <b>{a.distance_pct:+.1f}%</b>
+                    </td>
+                </tr>"""
+
+        body = f"""<!DOCTYPE html>
+        <html><head><meta charset="utf-8"></head><body>
+        <div style="max-width:600px;margin:0 auto;font-family:Arial,sans-serif;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
+
+        <!-- 头部 -->
+        <div style="background:#1a1a2e;color:white;padding:16px 20px">
+            <h2 style="margin:0;font-size:18px">{'🚨' if n_critical else '⚠️'} IBKR 持仓监控告警</h2>
+            <p style="margin:6px 0 0;opacity:0.7;font-size:12px">⏰ {now} &nbsp;|&nbsp; 📮 本次检查合并 {len(alerts)} 条预警 → 1 封邮件</p>
+        </div>
+
+        <!-- 摘要 -->
+        <div style="padding:16px 20px;background:#fafafa;border-bottom:1px solid #e0e0e0">
+            <table style="width:100%;text-align:center">
+                <tr>
+                    <td style="font-size:24px;font-weight:bold">{len(symbols)}</td>
+                    <td style="font-size:24px;font-weight:bold;color:#d00">{n_critical}</td>
+                    <td style="font-size:24px;font-weight:bold;color:#e67e00">{n_warning}</td>
+                    <td style="font-size:24px;font-weight:bold;color:#27ae60">{n_info}</td>
+                </tr>
+                <tr style="font-size:11px;color:#888">
+                    <td>涉及股票</td><td>紧急</td><td>警告</td><td>提示</td>
+                </tr>
+            </table>
+            <p style="margin:8px 0 0;font-size:12px;color:#666">
+                涉及股票：{'、'.join(symbols)}
+            </p>
+        </div>
+
+        <!-- 详表 -->
+        <div style="padding:8px 0">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <tr style="background:#f5f5f5;color:#555;font-size:11px;text-align:left">
+                    <th style="padding:8px 12px">股票</th>
+                    <th style="padding:8px 12px">级别</th>
+                    <th style="padding:8px 12px">现价</th>
+                    <th style="padding:8px 12px">阈值</th>
+                    <th style="padding:8px 12px">距离</th>
+                </tr>{rows_html}
+            </table>
+        </div>
+
+        <!-- 底部 -->
+        <div style="padding:12px 20px;background:#fafafa;border-top:1px solid #e0e0e0;font-size:11px;color:#999">
+            🤖 由 IBKR 交易助手自动发送 &nbsp;|&nbsp; 下次检查 {300}秒后 &nbsp;|&nbsp;
+            <a href="https://github.com/huai-xia/ibkr_stock" style="color:#666">ibkr_stock</a>
+        </div>
+
+        </div></body></html>"""
+
+        return notifier.send(subject, body, html=True)

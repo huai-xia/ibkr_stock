@@ -21,6 +21,10 @@ data/*.db
 .idea/
 .DS_Store
 
+# 测试输出 (生成物, 不提交)
+tests/*/output/
+debug/*/output/
+
 # 日志
 logs/
 *.log
