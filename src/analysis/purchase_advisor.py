@@ -656,12 +656,13 @@ class PurchaseAdvisor:
             - RSI 位置 (超卖/中性/超买)
             - 趋势方向 (up/down/neutral)
             - 波动率 (低/中/高)
-            - 布林位置 (下轨/中轨/上轨)
+            - 布林位置 (下轨/中轨/上轨) — 用实时价
             - 均线排列 (多头/空头/交织)
         """
         last = df.iloc[-1]
         rsi = float(last.get("rsi_14", 50))
         close = float(last["close"])
+        price = current_price or close  # 优先用实时价
 
         # 趋势
         sma5 = float(last.get("sma_5", close))
@@ -677,18 +678,18 @@ class PurchaseAdvisor:
         returns = df["close"].pct_change().dropna()
         vol = float(returns.std() * np.sqrt(252) * 100)
 
-        # 布林位置
+        # 布林位置（用实时价计算）
         try:
-            bb_l = float(last.get("bb_lower", close * 0.9))
-            bb_u = float(last.get("bb_upper", close * 1.1))
-            bb_pct = (close - bb_l) / (bb_u - bb_l) * 100 if bb_u > bb_l else 50
+            bb_l = float(last.get("bb_lower", price * 0.9))
+            bb_u = float(last.get("bb_upper", price * 1.1))
+            bb_pct = (price - bb_l) / (bb_u - bb_l) * 100 if bb_u > bb_l else 50
         except Exception:
             bb_pct = 50
 
         scores = []
         for stype, cfg in STRATEGY_REGISTRY.items():
             if cfg.get("_status") == "planned":
-                continue  # 跳过未实现的策略
+                continue
 
             sc = 50  # 基准分
 
@@ -706,7 +707,7 @@ class PurchaseAdvisor:
             elif cfg.get("prefers_uptrend") and trend == "down":
                 sc -= 15
             if not cfg.get("prefers_uptrend") and trend == "down" and rsi < 40:
-                sc += 15  # 逆势策略：下跌+超卖 = 机会
+                sc += 15
 
             # 波动率维度 (±15)
             if cfg.get("prefers_low_vol") and vol < 40:
@@ -714,13 +715,13 @@ class PurchaseAdvisor:
             elif cfg.get("prefers_low_vol") and vol > 70:
                 sc -= 10
             if not cfg.get("prefers_low_vol") and vol > 50:
-                sc += 10  # 高波动策略
+                sc += 10
 
-            # 布林维度 (±15)
-            if cfg.get("prefers_squeeze") and bb_pct < 20:
-                sc += 15  # 下轨附近 = 回归/突破机会
-            if not cfg.get("prefers_squeeze") and 40 < bb_pct < 60:
-                sc += 10  # 中轨附近 = 趋势确认
+            # 布林维度 (用 <35 替代 <20，更包容)
+            if cfg.get("prefers_squeeze") and bb_pct < 35:
+                sc += 15
+            if not cfg.get("prefers_squeeze") and 35 < bb_pct < 65:
+                sc += 10
 
             scores.append({
                 "type": stype,
@@ -733,19 +734,42 @@ class PurchaseAdvisor:
         return scores
 
     def _strategy_reason(self, stype, cfg, rsi, trend, vol, bb_pct) -> str:
-        """生成策略推荐理由"""
-        reasons = []
-        if cfg.get("prefers_oversold") and rsi < 35:
-            reasons.append(f"RSI{rsi:.0f}超卖")
-        if cfg.get("prefers_uptrend") and trend == "up":
-            reasons.append("趋势向上")
-        if cfg.get("prefers_low_vol") and vol < 40:
-            reasons.append(f"波动率{vol:.0f}%适中")
-        if cfg.get("prefers_squeeze") and bb_pct < 20:
-            reasons.append("布林下轨附近")
-        if not reasons:
-            reasons.append("综合技术面匹配")
-        return "，".join(reasons)
+        """生成策略推荐理由（始终包含数值，而非仅阈值触发时）"""
+        parts = []
+
+        # 核心判断维度
+        if cfg.get("prefers_oversold"):
+            if rsi < 35:
+                parts.append(f"RSI {rsi:.0f} 偏卖→适合抄底")
+            else:
+                parts.append(f"RSI {rsi:.0f} 未超卖，信号一般")
+        else:
+            if trend == "up":
+                parts.append(f"趋势向上→动量有利")
+            elif trend == "down":
+                parts.append(f"趋势向下→动量不利")
+            else:
+                parts.append(f"趋势震荡→方向不明")
+
+        if cfg.get("prefers_uptrend"):
+            if trend == "up":
+                parts.append("顺势做多")
+            else:
+                parts.append(f"非上升趋势，策略匹配度打折")
+
+        if cfg.get("prefers_low_vol"):
+            if vol < 40:
+                parts.append(f"波动率 {vol:.0f}% 适中")
+            else:
+                parts.append(f"波动率 {vol:.0f}% 偏高")
+
+        if cfg.get("prefers_squeeze"):
+            if bb_pct < 35:
+                parts.append(f"布林下轨附近({bb_pct:.0f}%)→回归机会")
+            elif bb_pct > 65:
+                parts.append(f"布林上轨附近({bb_pct:.0f}%)→注意风险")
+
+        return "；".join(parts) if parts else "综合技术面匹配"
 
     # ------------------------------------------------------------------
     # 置信度评分

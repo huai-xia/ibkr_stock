@@ -304,6 +304,236 @@ def cmd_trade_summary(args):
     print()
 
 
+def _interactive_confirm(symbol: str, advice, quantity: int, net_liq: float = 0) -> dict | None:
+    """
+    交互式逐项确认下单参数
+
+    每项展示建议值，用户可:
+        yes / y → 接受
+        back / b → 返回修改上一项
+        cancel / c → 取消整个下单
+        <输入值>  → 使用自定义值
+
+    Returns:
+        确认后的参数字典，取消返回 None
+    """
+    entry_price = advice.suggested_entry_price
+    stop_loss = advice.suggested_stop_loss
+    take_profit = advice.suggested_take_profit
+
+    fields = [
+        {"key": "quantity",   "label": "数量",   "value": quantity,               "fmt": "{} 股"},
+        {"key": "order_type", "label": "订单类型", "value": advice.suggested_order_type, "fmt": "{}",
+         "hint": "(LIMIT 限价 / MARKET 市价)"},
+        {"key": "price",      "label": "入场价",  "value": entry_price,             "fmt": "${:.2f}",
+         "hint": f"(建议 ${entry_price:.2f})"},
+        {"key": "stop",       "label": "止损价",  "value": stop_loss,               "fmt": "${:.2f}",
+         "hint": f"(风险: {(entry_price - stop_loss) * quantity:.0f}$ = {(entry_price - stop_loss) / entry_price * 100:.1f}%)"},
+        {"key": "target",     "label": "止盈价",  "value": take_profit,             "fmt": "${:.2f}",
+         "hint": f"(收益: {(take_profit - entry_price) * quantity:.0f}$ = {(take_profit - entry_price) / entry_price * 100:.1f}%, R/R {advice.risk_reward_ratio:.1f}:1)"},
+    ]
+
+    print(f"\n  📋 逐项确认 — {advice.strategy_label}策略买入 {symbol}")
+    print(f"  💡 输入 yes 接受 / 输入新值修改 / back 返回上一步 / cancel 取消")
+    print(f"  {'─'*50}")
+
+    i = 0
+    confirmed = dict(quantity=quantity, order_type=advice.suggested_order_type,
+                     price=entry_price, stop=stop_loss, target=take_profit)
+
+    while i < len(fields):
+        f = fields[i]
+        current_val = confirmed[f["key"]]
+
+        # 格式化展示
+        try:
+            display = f["fmt"].format(current_val)
+        except Exception:
+            display = str(current_val)
+
+        hint = f.get("hint", "")
+        try:
+            raw_input = input(f"  [{f['label']}] {display} {hint}\n  → ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  🚫 已取消\n")
+            return None
+
+        if raw_input.lower() in ("cancel", "c"):
+            print("  🚫 已取消\n")
+            return None
+
+        if raw_input.lower() in ("back", "b"):
+            if i > 0:
+                i -= 1
+                print(f"  ↩ 返回修改 [{fields[i]['label']}]\n")
+                continue
+            else:
+                print("  ⚠️ 已是第一项，无法返回\n")
+                continue
+
+        if raw_input.lower() in ("yes", "y", ""):
+            # 接受当前值
+            i += 1
+            continue
+
+        # 用户输入了新值
+        try:
+            if f["key"] == "order_type":
+                raw_upper = raw_input.upper()
+                if raw_upper in ("LIMIT", "MARKET", "L", "M"):
+                    new_val = "LIMIT" if raw_upper.startswith("L") else "MARKET"
+                else:
+                    print(f"  ⚠️ 无效类型，支持 LIMIT/MARKET\n")
+                    continue
+            elif f["key"] == "quantity":
+                new_val = int(raw_input)
+                if new_val <= 0:
+                    print(f"  ⚠️ 数量需 > 0\n")
+                    continue
+            else:
+                new_val = float(raw_input)
+                if new_val <= 0:
+                    print(f"  ⚠️ 价格需 > 0\n")
+                    continue
+        except ValueError:
+            print(f"  ⚠️ 输入格式错误，请重新输入\n")
+            continue
+
+        confirmed[f["key"]] = new_val
+        # 如果修改了价格，同步更新止损止盈的 hint
+        if f["key"] == "price":
+            entry_price = new_val
+            for fj in fields:
+                if fj["key"] == "stop":
+                    fj["hint"] = (f"(风险: {(entry_price - confirmed['stop']) * confirmed['quantity']:.0f}$ = "
+                                  f"{(entry_price - confirmed['stop']) / entry_price * 100:.1f}%)")
+                if fj["key"] == "target":
+                    risk = entry_price - confirmed["stop"]
+                    reward = confirmed["target"] - entry_price
+                    rr = reward / risk if risk > 0 else 0
+                    fj["hint"] = (f"(收益: {(confirmed['target'] - entry_price) * confirmed['quantity']:.0f}$ = "
+                                  f"{(confirmed['target'] - entry_price) / entry_price * 100:.1f}%, R/R {rr:.1f}:1)")
+        if f["key"] == "quantity":
+            qty = new_val
+            for fj in fields:
+                if fj["key"] == "stop":
+                    fj["hint"] = (f"(风险: {(entry_price - confirmed['stop']) * qty:.0f}$ = "
+                                  f"{(entry_price - confirmed['stop']) / entry_price * 100:.1f}%)")
+                if fj["key"] == "target":
+                    fj["hint"] = (f"(收益: {(confirmed['target'] - entry_price) * qty:.0f}$ = "
+                                  f"{(confirmed['target'] - entry_price) / entry_price * 100:.1f}%)")
+
+        print(f"  ✅ 已更新为 {f['label']}: {display_for(f['key'], new_val)}\n")
+        i += 1
+
+    # ── 最终确认 ──
+    entry = confirmed["price"]
+    stop = confirmed["stop"]
+    target = confirmed["target"]
+    qty = confirmed["quantity"]
+    risk = (entry - stop) * qty
+    reward = (target - entry) * qty
+    rr = reward / risk if risk > 0 else 0
+    pos_pct = qty * entry / net_liq * 100 if net_liq > 0 else 0
+
+    print(f"  {'═'*50}")
+    print(f"  📋 最终确认")
+    print(f"  {'═'*50}")
+    print(f"  {symbol:8s} BUY {qty} 股 @ ${entry:.2f} ({confirmed['order_type']})")
+    print(f"  止损 ${stop:.2f}  止盈 ${target:.2f}  R/R {rr:.1f}:1")
+    print(f"  最大亏损 ${risk:.0f}  最大收益 ${reward:.0f}")
+    if pos_pct > 0:
+        print(f"  仓位占比 {pos_pct:.1f}%")
+    print(f"  {'═'*50}")
+
+    while True:
+        try:
+            final = input("  ⚠️ 确认下单？yes / back / cancel: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  🚫 已取消\n")
+            return None
+
+        if final in ("cancel", "c"):
+            print("  🚫 已取消\n")
+            return None
+        if final in ("back", "b"):
+            i = len(fields) - 1
+            print(f"  ↩ 返回修改 [{fields[-1]['label']}]\n")
+            # Continue the outer loop — need to re-enter
+            while i < len(fields):
+                f = fields[i]
+                current_val = confirmed[f["key"]]
+                try:
+                    display = f["fmt"].format(current_val)
+                except Exception:
+                    display = str(current_val)
+                hint = f.get("hint", "")
+                try:
+                    raw_input = input(f"  [{f['label']}] {display} {hint}\n  → ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  🚫 已取消\n")
+                    return None
+                if raw_input.lower() in ("cancel", "c"):
+                    print("  🚫 已取消\n")
+                    return None
+                if raw_input.lower() in ("back", "b"):
+                    if i > 0:
+                        i -= 1
+                        print(f"  ↩ 返回修改 [{fields[i]['label']}]\n")
+                        continue
+                    else:
+                        print("  ⚠️ 已是第一项\n")
+                        continue
+                if raw_input.lower() in ("yes", "y", ""):
+                    i += 1
+                    continue
+                try:
+                    if f["key"] == "order_type":
+                        raw_upper = raw_input.upper()
+                        if raw_upper in ("LIMIT", "MARKET", "L", "M"):
+                            confirmed[f["key"]] = "LIMIT" if raw_upper.startswith("L") else "MARKET"
+                        else:
+                            continue
+                    elif f["key"] == "quantity":
+                        confirmed[f["key"]] = int(raw_input)
+                    else:
+                        confirmed[f["key"]] = float(raw_input)
+                except ValueError:
+                    continue
+                i += 1
+            # After re-edit, show final summary again
+            entry = confirmed["price"]
+            stop = confirmed["stop"]
+            target = confirmed["target"]
+            qty = confirmed["quantity"]
+            risk = (entry - stop) * qty
+            reward = (target - entry) * qty
+            rr = reward / risk if risk > 0 else 0
+            pos_pct = qty * entry / net_liq * 100 if net_liq > 0 else 0
+            print(f"\n  {'═'*50}")
+            print(f"  📋 最终确认")
+            print(f"  {'═'*50}")
+            print(f"  {symbol:8s} BUY {qty} 股 @ ${entry:.2f} ({confirmed['order_type']})")
+            print(f"  止损 ${stop:.2f}  止盈 ${target:.2f}  R/R {rr:.1f}:1")
+            print(f"  最大亏损 ${risk:.0f}  最大收益 ${reward:.0f}")
+            if pos_pct > 0:
+                print(f"  仓位占比 {pos_pct:.1f}%")
+            print(f"  {'═'*50}")
+            continue  # back to final confirmation loop
+        if final in ("yes", "y"):
+            return confirmed
+        print("  请输入 yes / back / cancel\n")
+
+
+def _display_for(key: str, val) -> str:
+    """格式化显示值"""
+    if key == "order_type":
+        return str(val)
+    if key == "quantity":
+        return f"{val} 股"
+    return f"${val:.2f}"
+
+
 def cmd_buy_advice(args):
     """智能购买建议：自动推荐策略 + 止损止盈 + 置信度评分"""
     symbol = args.symbol.upper()
@@ -348,16 +578,81 @@ def cmd_buy_advice(args):
     print(advisor.format_advice(advice))
 
     # 保存到持仓追踪
-    if args.save:
+    if args.save or args.execute:
         try:
             from src.analysis.portfolio_strategy import PortfolioStrategyManager
             mgr = PortfolioStrategyManager(ib)
             mgr.save_purchase_advice(advice, args.quantity)
-            print(f"  ✅ 已保存到持仓追踪文件 (账户: {account})\n")
+            print(f"  ✅ 已保存到持仓追踪文件 (账户: {account})")
         except Exception as e:
-            print(f"  ⚠️ 保存持仓追踪失败: {e}\n")
+            print(f"  ⚠️ 保存持仓追踪失败: {e}")
+
+    # 一站式执行
+    if args.execute:
+        if args.quantity <= 0:
+            print("\n  ✗ --execute 需要指定 --quantity 数量\n")
+            ib.disconnect()
+            return
+
+        # 交互式逐项确认
+        confirmed = _interactive_confirm(symbol, advice, args.quantity, net_liq)
+        if confirmed is None:
+            # 用户取消
+            ib.disconnect()
+            print()
+            return
+
+        # 执行下单
+        print("\n  📤 正在下单...")
+        from src.trade.orders import OrderExecutor, OrderRequest, OrderAction, OrderType
+        from src.trade.recorder import TradeRecorder
+        from src.trade.risk import RiskManager
+
+        recorder = TradeRecorder("data/trade.db")
+        risk = RiskManager(recorder, account=account, net_liq=net_liq)
+        executor = OrderExecutor(ib, risk, recorder, readonly=False)
+
+        order_type = OrderType.LIMIT if confirmed["order_type"].upper() == "LIMIT" else OrderType.MARKET
+
+        req = OrderRequest(
+            symbol=symbol,
+            action=OrderAction.BUY,
+            quantity=confirmed["quantity"],
+            order_type=order_type,
+            price=confirmed["price"],
+        )
+
+        result = executor.place(req)
+
+        if result.success:
+            print(f"\n  ✅ 订单已提交: {result.message}")
+            print(f"  📊 止损 ${confirmed['stop']:.2f} | 止盈 ${confirmed['target']:.2f}")
+            print(f"  📋 持仓追踪文件已更新，监控守护可自动接管")
+
+            # 如果用户修改了止损/止盈，更新持仓追踪文件
+            if (abs(confirmed["stop"] - advice.suggested_stop_loss) > 0.01 or
+                    abs(confirmed["target"] - advice.suggested_take_profit) > 0.01):
+                try:
+                    from src.analysis.portfolio_strategy import PortfolioStrategyManager
+                    mgr = PortfolioStrategyManager(ib)
+                    mgr.update_holding(
+                        symbol,
+                        stop_loss=confirmed["stop"],
+                        take_profit=confirmed["target"],
+                        entry_price=confirmed["price"],
+                        quantity=confirmed["quantity"],
+                    )
+                    print(f"  ✅ 已更新自定义止损/止盈到追踪文件")
+                except Exception as e:
+                    print(f"  ⚠️ 更新追踪文件失败: {e}")
+        else:
+            print(f"\n  ✗ 下单失败: {result.message}")
+            if result.risk_result and result.risk_result.warnings:
+                for w in result.risk_result.warnings:
+                    print(f"    {w}")
 
     ib.disconnect()
+    print()
 
 
 def cmd_notify_test(args):
@@ -899,6 +1194,7 @@ def main():
     p_advice.add_argument("--strategy", default="", help="指定策略: mean_reversion(均值回归) / momentum(动量) / 不填=自动推荐")
     p_advice.add_argument("--days", type=int, default=365, help="历史数据天数 (默认: 365)")
     p_advice.add_argument("--save", action="store_true", help="保存建议到持仓追踪文件")
+    p_advice.add_argument("--execute", action="store_true", help="🚀 展示建议后确认并直接下单（需 --quantity）")
 
     # notify-test
     p_notify = subparsers.add_parser("notify-test", help="[通知] 测试消息推送 | 用法: notify-test <渠道>")

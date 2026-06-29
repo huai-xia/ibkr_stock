@@ -130,7 +130,7 @@ class RiskManager:
         """
         from src.trade.orders import OrderAction
 
-        result = RiskResult(pdt_max=self.pdt_max)
+        result = RiskResult(allowed=True, pdt_max=self.pdt_max)
 
         # 0. 检查是否在冷却期
         if self._blocked_until and datetime.now() < self._blocked_until:
