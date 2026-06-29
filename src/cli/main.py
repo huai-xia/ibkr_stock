@@ -423,7 +423,7 @@ def _interactive_confirm(symbol: str, advice, quantity: int, net_liq: float = 0)
                     fj["hint"] = (f"(收益: {(confirmed['target'] - entry_price) * qty:.0f}$ = "
                                   f"{(confirmed['target'] - entry_price) / entry_price * 100:.1f}%)")
 
-        print(f"  ✅ 已更新为 {f['label']}: {display_for(f['key'], new_val)}\n")
+        print(f"  ✅ 已更新为 {f['label']}: {_display_for(f['key'], new_val)}\n")
         i += 1
 
     # ── 最终确认 ──
@@ -589,13 +589,31 @@ def cmd_buy_advice(args):
 
     # 一站式执行
     if args.execute:
-        if args.quantity <= 0:
-            print("\n  ✗ --execute 需要指定 --quantity 数量\n")
-            ib.disconnect()
-            return
+        # 使用推荐数量（如果用户没手动指定）
+        exec_qty = args.quantity if args.quantity > 0 else advice.suggested_quantity
+        if exec_qty <= 0:
+            exec_qty = 1
+
+        # 显示方向
+        dir_display = {"BUY": "🟢 买入", "SELL": "🔴 卖出(做空)", "NEUTRAL": "🟡 观望"}.get(advice.direction, advice.direction)
+        print(f"\n  📊 方向判断: {dir_display}")
+        if advice.direction_reason:
+            print(f"  📊 依据: {advice.direction_reason}")
+        if advice.direction == "NEUTRAL":
+            print(f"  ⚠️ 当前建议观望，是否仍要继续？")
+            try:
+                cont = input("  输入 yes 继续 / 其他取消: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  已取消\n")
+                ib.disconnect()
+                return
+            if cont != "yes":
+                print("  已取消\n")
+                ib.disconnect()
+                return
 
         # 交互式逐项确认
-        confirmed = _interactive_confirm(symbol, advice, args.quantity, net_liq)
+        confirmed = _interactive_confirm(symbol, advice, exec_qty, net_liq)
         if confirmed is None:
             # 用户取消
             ib.disconnect()
@@ -614,9 +632,10 @@ def cmd_buy_advice(args):
 
         order_type = OrderType.LIMIT if confirmed["order_type"].upper() == "LIMIT" else OrderType.MARKET
 
+        order_action = OrderAction.SELL if advice.direction == "SELL" else OrderAction.BUY
         req = OrderRequest(
             symbol=symbol,
-            action=OrderAction.BUY,
+            action=order_action,
             quantity=confirmed["quantity"],
             order_type=order_type,
             price=confirmed["price"],

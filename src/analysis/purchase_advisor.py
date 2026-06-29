@@ -78,11 +78,18 @@ class PurchaseAdvice:
     session_warning: str = ""
 
     # 策略信息
-    strategy_type: str = ""           # mean_reversion / momentum / ...
-    strategy_label: str = ""          # 策略中文名
-    strategy_reason: str = ""         # 为什么推荐此策略
-    strategy_score: int = 0           # 策略匹配评分
-    alternative_strategies: list = field(default_factory=list)  # [{type, label, score}]
+    strategy_type: str = ""
+    strategy_label: str = ""
+    strategy_reason: str = ""
+    strategy_score: int = 0
+    alternative_strategies: list = field(default_factory=list)
+
+    # 方向与数量
+    direction: str = "BUY"              # BUY / SELL / NEUTRAL
+    direction_reason: str = ""
+    suggested_quantity: int = 0         # 建议股数 (0=需手动指定)
+    quantity_method: str = "fixed_risk"
+    risk_per_trade_pct: float = 2.0
 
     # 建议文字
     recommendation: str = ""
@@ -623,11 +630,47 @@ class PurchaseAdvisor:
             risk_profile=risk_profile,
         )
 
-        # ── 5. 数量 ──
+        # ── 5. 方向判断 + 数量推荐 ──
+        from src.analysis.position_sizer import PositionSizer
+        sizer = PositionSizer()
+
+        # 方向 (用所有信号，不仅买入信号)
+        all_signals = advice.buy_signals  # algorithm 已填充
+        # 也检查是否有卖出/alert 信号
+        from src.analysis.signals import SignalDetector
+        detector = SignalDetector()
+        full_signals = detector.scan(symbol, df)
+        sell_signals = [s for s in full_signals if s.signal_type in ("sell", "alert")]
+        direction, dir_reason = sizer.recommend_direction(
+            buy_signals=full_signals,
+            trend=advice.trend,
+            rsi=advice.rsi,
+            vol_pct=advice.volatility_pct,
+        )
+        advice.direction = direction
+        advice.direction_reason = dir_reason
+
+        # 数量
         if quantity <= 0 and budget > 0 and advice.current_price > 0:
             quantity = max(1, int(budget / advice.current_price))
-        if quantity <= 0:
+
+        if quantity <= 0 and advice.direction != "NEUTRAL" and net_liq > 0:
+            # 自动推荐：固定风险法
+            plan = sizer.recommend_fixed_risk(
+                net_liq=net_liq,
+                entry_price=advice.suggested_entry_price,
+                stop_price=advice.suggested_stop_loss,
+            )
+            quantity = plan.suggested_quantity
+            advice.suggested_quantity = quantity
+            advice.quantity_method = plan.quantity_method
+            advice.risk_per_trade_pct = plan.risk_per_trade_pct
+            advice.max_loss_pct = round(plan.max_loss_amount / net_liq * 100, 2) if net_liq > 0 else 0
+            advice.suggested_position_pct = plan.position_pct
+        elif quantity <= 0:
             quantity = 1
+            advice.suggested_quantity = 1
+            advice.quantity_method = "手动(观望)" if advice.direction == "NEUTRAL" else "manual"
 
         # ── 6. 置信度评分（权重来自策略配置，评分函数来自算法） ──
         advice.confidence_score = self._calc_confidence(advice, strategy_config, algorithm)
@@ -818,14 +861,18 @@ class PurchaseAdvisor:
     # ------------------------------------------------------------------
 
     def _make_summary(self, a: PurchaseAdvice) -> str:
-        if a.confidence_score >= 70:
-            lvl = "🟢 建议买入"
+        dir_map = {"BUY": "买入", "SELL": "卖出", "NEUTRAL": "观望"}
+        if a.direction == "NEUTRAL":
+            lvl = "🟡 建议观望"
+        elif a.confidence_score >= 70:
+            lvl = f"🟢 建议{dir_map.get(a.direction, '')}"
         elif a.confidence_score >= 40:
-            lvl = "🟡 可适量参与"
+            lvl = f"🟡 适量{dir_map.get(a.direction, '')}"
         else:
-            lvl = "🔴 建议观望"
+            lvl = f"🔴 不建议操作"
+        qty_str = f"{a.suggested_quantity}股" if a.suggested_quantity > 0 else ""
         return (
-            f"{lvl} | [{a.strategy_label}] {a.symbol} ${a.current_price:.2f} | "
+            f"{lvl} | [{a.strategy_label}] {a.symbol} ${a.current_price:.2f} {qty_str} | "
             f"止损${a.suggested_stop_loss:.2f} | 止盈${a.suggested_take_profit:.2f} | "
             f"置信度{a.confidence_score}/100"
         )
@@ -853,6 +900,13 @@ class PurchaseAdvisor:
             lines.append(f"| 推荐策略 | **{advice.strategy_label}** (匹配度 {advice.strategy_score}/100) |")
         if advice.strategy_reason:
             lines.append(f"| 推荐理由 | {advice.strategy_reason} |")
+
+        # 方向
+        dir_emoji = {"BUY": "🟢 买入", "SELL": "🔴 卖出(做空)", "NEUTRAL": "🟡 观望"}.get(advice.direction, advice.direction)
+        lines.append(f"| 建议方向 | **{dir_emoji}** |")
+        if advice.direction_reason:
+            lines.append(f"| 方向依据 | {advice.direction_reason} |")
+
         lines.append(f"| 建议订单 | ✅ 限价单 LIMIT |")
         lines.append(f"| 建议入场 | ${advice.suggested_entry_price:.2f} |")
 
@@ -861,9 +915,14 @@ class PurchaseAdvisor:
         lines.append(f"| 建议止损 | ${advice.suggested_stop_loss:.2f} (-{sd:.1f}%) |")
         lines.append(f"| 建议止盈 | ${advice.suggested_take_profit:.2f} (+{td:.1f}%) |")
         lines.append(f"| 盈亏比 | **{advice.risk_reward_ratio:.1f}:1** |")
-        lines.append(f"| 建议仓位 | {advice.suggested_position_pct:.0f}% |")
+
+        # 数量
+        if advice.suggested_quantity > 0:
+            qty_method = {"fixed_risk": "固定风险法", "manual": "手动", "kelly": "Kelly", "vol_target": "波动率目标"}.get(advice.quantity_method, advice.quantity_method)
+            lines.append(f"| 建议数量 | **{advice.suggested_quantity} 股** ({qty_method}) |")
+        lines.append(f"| 建议仓位 | {advice.suggested_position_pct:.1f}% |")
         if advice.max_loss_pct > 0:
-            lines.append(f"| 最大亏损 | {advice.max_loss_pct:.1f}% 净值 |")
+            lines.append(f"| 最大亏损 | {advice.max_loss_pct:.2f}% 净值 (单笔风险 {advice.risk_per_trade_pct}%) |")
 
         clevel = f"{'🟢 HIGH' if advice.confidence_score >= 70 else ('🟡 MEDIUM' if advice.confidence_score >= 40 else '🔴 LOW')}"
         lines.append(f"| 置信度 | **{advice.confidence_score}/100 {clevel}** |")
