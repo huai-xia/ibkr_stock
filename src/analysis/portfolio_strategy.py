@@ -188,6 +188,51 @@ class PortfolioStrategyManager:
         logger.info("持仓策略已更新: %s %s", symbol, kwargs)
 
     # ------------------------------------------------------------------
+    # 购买建议存储
+    # ------------------------------------------------------------------
+
+    def save_purchase_advice(self, advice, quantity: int = 0, entry_price: float = 0.0):
+        """
+        将 PurchaseAdvice 的建议写入持仓策略文件
+
+        后续 PositionMonitor 会读取此文件来追踪止损/止盈。
+        """
+        # 确保所有数值是原生 Python 类型（避免 numpy 序列化问题）
+        def _py(val):
+            """转换 numpy 类型为原生 Python 类型"""
+            if hasattr(val, "item"):  # numpy scalar
+                val = val.item()
+            if isinstance(val, float):
+                return round(float(val), 2)
+            if isinstance(val, int):
+                return int(val)
+            return val
+
+        entry = _py(entry_price or advice.suggested_entry_price)
+        qty = quantity or 1
+
+        self.update_holding(
+            advice.symbol,
+            entry_price=entry,
+            quantity=qty,
+            stop_loss=_py(advice.suggested_stop_loss),
+            take_profit=_py(advice.suggested_take_profit),
+            current_price=_py(advice.current_price),
+            risk_reward=_py(advice.risk_reward_ratio),
+            # 购买建议专属字段
+            suggested_stop_loss=_py(advice.suggested_stop_loss),
+            suggested_take_profit=_py(advice.suggested_take_profit),
+            purchase_confidence=int(advice.confidence_score),
+            purchase_signals=advice.strongest_signal,
+            purchase_algorithm=advice.algorithm_version,
+            purchase_date=advice.timestamp,
+            purchase_strategy=advice.strategy_type,
+            purchase_warnings=", ".join(advice.warnings) if advice.warnings else "",
+            purchase_recommendation=advice.recommendation[:200],
+        )
+        logger.info("购买建议已保存到持仓策略: %s", advice.symbol)
+
+    # ------------------------------------------------------------------
     # 展示
     # ------------------------------------------------------------------
 

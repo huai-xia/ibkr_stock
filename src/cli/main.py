@@ -304,6 +304,62 @@ def cmd_trade_summary(args):
     print()
 
 
+def cmd_buy_advice(args):
+    """智能购买建议：自动推荐策略 + 止损止盈 + 置信度评分"""
+    symbol = args.symbol.upper()
+
+    # 连接 IBKR 获取账户信息
+    ib, factory, md, pf = _connect(args.host, args.port, args.client_id)
+
+    # 获取净清算值
+    net_liq = 0.0
+    accounts = ib.managedAccounts()
+    account = getattr(args, 'account', '') or (accounts[0] if accounts else "")
+    try:
+        summary = ib.accountSummary()
+        for s in summary:
+            if s.tag == "NetLiquidation" and s.currency == "USD":
+                net_liq = float(s.value)
+                break
+    except Exception:
+        pass
+
+    # 运行购买建议引擎
+    from src.analysis.purchase_advisor import PurchaseAdvisor
+
+    strat_hint = f"策略: {args.strategy}" if args.strategy else "自动推荐策略"
+    print(f"\n  🔍 正在分析 {symbol}（{strat_hint}）...\n")
+    advisor = PurchaseAdvisor(ib)
+    advice = advisor.analyze(
+        symbol=symbol,
+        quantity=args.quantity,
+        budget=args.budget,
+        net_liq=net_liq,
+        strategy=args.strategy,
+        days=args.days,
+    )
+
+    if advice is None:
+        print("  ✗ 无法生成购买建议\n")
+        ib.disconnect()
+        return
+
+    # 打印格式化建议
+    print(advisor.format_advice(advice))
+
+    # 保存到持仓追踪
+    if args.save:
+        try:
+            from src.analysis.portfolio_strategy import PortfolioStrategyManager
+            mgr = PortfolioStrategyManager(ib)
+            mgr.save_purchase_advice(advice, args.quantity)
+            print(f"  ✅ 已保存到持仓追踪文件 (账户: {account})\n")
+        except Exception as e:
+            print(f"  ⚠️ 保存持仓追踪失败: {e}\n")
+
+    ib.disconnect()
+
+
 def cmd_notify_test(args):
     """测试通知推送（微信/Server酱/邮件）"""
     channel = args.channel
@@ -757,6 +813,11 @@ def main():
   ibkr-stock --port 4002 pdt                      PDT 日内交易计数
   ibkr-stock --port 4002 trade-summary            交易记录统计
 
+  # 智能建议类
+  ibkr-stock --port 4002 buy-advice NVDA          智能购买建议（自动推荐策略）
+  ibkr-stock --port 4002 buy-advice NVDA --quantity 5 --strategy momentum
+  ibkr-stock --port 4002 buy-advice NVDA --budget 1000 --save
+
   # 行情类
   ibkr-stock --port 4002 quote AAPL               AAPL 实时报价
   ibkr-stock --port 4002 history AAPL --days 60   AAPL 60天日线
@@ -829,6 +890,15 @@ def main():
 
     # trade-summary
     subparsers.add_parser("trade-summary", help="[查询] 交易记录统计（胜率/盈亏/每日汇总）")
+
+    # buy-advice: 智能购买建议
+    p_advice = subparsers.add_parser("buy-advice", help="[分析] 智能购买建议 | 用法: buy-advice <代码> [--quantity 数量] [--strategy 策略]")
+    p_advice.add_argument("symbol", help="股票代码，如 NVDA, AAPL, TSLA")
+    p_advice.add_argument("--quantity", type=int, default=0, help="期望买入股数（不填则自动建议）")
+    p_advice.add_argument("--budget", type=float, default=0.0, help="买入金额预算（与 --quantity 二选一）")
+    p_advice.add_argument("--strategy", default="", help="指定策略: mean_reversion(均值回归) / momentum(动量) / 不填=自动推荐")
+    p_advice.add_argument("--days", type=int, default=365, help="历史数据天数 (默认: 365)")
+    p_advice.add_argument("--save", action="store_true", help="保存建议到持仓追踪文件")
 
     # notify-test
     p_notify = subparsers.add_parser("notify-test", help="[通知] 测试消息推送 | 用法: notify-test <渠道>")
@@ -921,6 +991,7 @@ def main():
         "monitor": cmd_monitor,
         "briefing": cmd_briefing,
         "sync-history": cmd_sync,
+        "buy-advice": cmd_buy_advice,
     }
 
     handler = commands.get(args.command)
