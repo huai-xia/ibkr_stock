@@ -163,14 +163,41 @@ def cmd_portfolio(args):
 
 def cmd_pdt(args):
     """查看 PDT 日内交易计数"""
+    # 连接 IBKR 获取账户净清算值
+    ib, factory, md, pf = _connect(args.host, args.port, args.client_id)
+    accounts = ib.managedAccounts()
+    account = getattr(args, 'account', '') or (accounts[0] if accounts else "")
+    net_liq = 0.0
+    try:
+        summary = ib.accountSummary()
+        for s in summary:
+            if s.tag == "NetLiquidation" and s.currency == "USD":
+                net_liq = float(s.value)
+                break
+    except Exception:
+        pass
+    ib.disconnect()
+
+    # PDT 规则仅适用于净清算值 < $25,000 的账户
+    PDT_THRESHOLD = 25000.0
+    if net_liq >= PDT_THRESHOLD:
+        print("\n" + "=" * 40)
+        print("  PDT 日内交易状态")
+        print("=" * 40)
+        print(f"  净清算值: ${net_liq:,.2f} (≥ $25,000)")
+        print(f"  ✅ PDT 规则不适用 — 账户净值超过 $25,000，无日内交易限制")
+        print("=" * 40 + "\n")
+        return
+
     recorder = TradeRecorder("data/trade.db")
-    rm = RiskManager(recorder)
+    rm = RiskManager(recorder, account=account, net_liq=net_liq)
 
     status = rm.get_pdt_status()
 
     print("\n" + "=" * 40)
     print("  PDT 日内交易状态")
     print("=" * 40)
+    print(f"  净清算值: ${net_liq:,.2f} (低于 $25,000，PDT 适用)")
     print(f"  过去 {status['window_days']} 个交易日")
     print(f"  日内交易次数: {status['count']} / {status['max']}")
     print(f"  剩余额度: {status['remaining']} 次")
@@ -227,39 +254,52 @@ def cmd_order(args):
 
 
 def cmd_trade_summary(args):
-    """查看交易记录统计"""
+    """查看交易记录统计（仅当前登录账户）"""
+    # 连接 IBKR 获取当前账户 ID
+    ib, factory, md, pf = _connect(args.host, args.port, args.client_id)
+    accounts = ib.managedAccounts()
+    account = getattr(args, 'account', '') or (accounts[0] if accounts else "")
+    ib.disconnect()
+
     recorder = TradeRecorder("data/trade.db")
 
-    # 盈亏总览
-    pnl = recorder.pnl_summary()
+    # 盈亏总览（仅当前账户）
+    pnl = recorder.pnl_summary(account=account)
     print("\n" + "=" * 40)
     print("  交易盈亏总览")
     print("=" * 40)
+    print(f"  账户: {account}")
     print(f"  总交易数: {pnl['total_trades']}")
     print(f"  盈利: {pnl['wins']} | 亏损: {pnl['losses']}")
     print(f"  胜率: {pnl['win_rate']:.1%}")
     print(f"  累计盈亏: ${pnl['total_pnl']:.2f}")
     print("=" * 40)
 
-    # 按股票汇总
+    # 按股票汇总（仅当前账户，近30天）
     print("\n  按股票汇总（近30天）:")
-    symbol_summary = recorder.symbol_summary(days=30)
-    for s in symbol_summary:
-        pnl = s["total_pnl"] or 0.0
-        sign = "+" if pnl > 0 else ""
-        print(f"    {s['symbol']}: {s['trades']}笔, "
-              f"盈亏 {sign}${pnl:.2f}, "
-              f"日内 {s['day_trades']}次")
+    symbol_summary = recorder.symbol_summary(days=30, account=account)
+    if symbol_summary:
+        for s in symbol_summary:
+            pnl_val = s["total_pnl"] or 0.0
+            sign = "+" if pnl_val > 0 else ""
+            print(f"    {s['symbol']}: {s['trades']}笔, "
+                  f"盈亏 {sign}${pnl_val:.2f}, "
+                  f"日内 {s['day_trades']}次")
+    else:
+        print("    (无交易记录)")
 
-    # 每日汇总
+    # 每日汇总（仅当前账户，近7天）
     print("\n  每日汇总（近7天）:")
-    daily = recorder.daily_summary(days=7)
-    for d in daily:
-        pnl = d["total_pnl"] or 0.0
-        sign = "+" if pnl > 0 else ""
-        print(f"    {d['date']}: {d['trade_count']}笔, "
-              f"盈亏 {sign}${pnl:.2f}, "
-              f"日内 {d['day_trades']}次")
+    daily = recorder.daily_summary(days=7, account=account)
+    if daily:
+        for d in daily:
+            pnl_val = d["total_pnl"] or 0.0
+            sign = "+" if pnl_val > 0 else ""
+            print(f"    {d['date']}: {d['trade_count']}笔, "
+                  f"盈亏 {sign}${pnl_val:.2f}, "
+                  f"日内 {d['day_trades']}次")
+    else:
+        print("    (无交易记录)")
 
     print()
 

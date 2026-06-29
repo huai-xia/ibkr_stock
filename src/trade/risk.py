@@ -170,6 +170,12 @@ class RiskManager:
         symbol: str,
     ) -> RiskResult:
         """检查 PDT 日内交易限制"""
+        # PDT 规则仅适用于净清算值 < $25,000 的账户
+        PDT_THRESHOLD = 25000.0
+        if self.net_liq >= PDT_THRESHOLD:
+            result.pdt_count = 0
+            return result
+
         from src.trade.orders import OrderAction
 
         count = self._recorder.count_day_trades(
@@ -336,7 +342,20 @@ class RiskManager:
     # ------------------------------------------------------------------
 
     def get_pdt_status(self) -> dict:
-        """获取 PDT 状态"""
+        """获取 PDT 状态（净资产 ≥ $25,000 时 PDT 不适用）"""
+        PDT_THRESHOLD = 25000.0
+        if self.net_liq >= PDT_THRESHOLD:
+            return {
+                "count": 0,
+                "max": self.pdt_max,
+                "remaining": self.pdt_max,
+                "level": RiskLevel.GREEN.value,
+                "window_days": self.pdt_window_days,
+                "pdt_applies": False,
+                "net_liq": self.net_liq,
+                "details": [],
+            }
+
         count = self._recorder.count_day_trades(
             account=self.account,
             window_days=self.pdt_window_days,
@@ -356,6 +375,8 @@ class RiskManager:
             "remaining": remaining,
             "level": level.value,
             "window_days": self.pdt_window_days,
+            "pdt_applies": True,
+            "net_liq": self.net_liq,
             "details": self._recorder.get_day_trade_details(
                 account=self.account,
                 window_days=self.pdt_window_days,

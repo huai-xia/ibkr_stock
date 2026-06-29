@@ -348,18 +348,24 @@ class DailyBriefing:
         try:
             from src.trade.recorder import TradeRecorder
             from src.trade.risk import RiskManager
-            recorder = TradeRecorder("data/trade.db")
-            risk = RiskManager(recorder)
-            pdt = risk.get_pdt_status()
 
-            pdt_emoji = "🟢" if pdt["count"] < 2 else ("🟡" if pdt["count"] < 3 else "🔴")
-            lines.append(f"| 指标 | 状态 |")
-            lines.append(f"|------|------|")
-            lines.append(f"| PDT 日内交易 | {pdt_emoji} {pdt['count']}/{pdt['max']} 次 |")
-
-            # 账户
+            # 获取账户净值
             summary = self._portfolio.get_account_summary()
             net_liq = summary.get("net_liquidation", 0)
+
+            recorder = TradeRecorder("data/trade.db")
+            risk = RiskManager(recorder, net_liq=net_liq)
+            pdt = risk.get_pdt_status()
+
+            lines.append(f"| 指标 | 状态 |")
+            lines.append(f"|------|------|")
+
+            if pdt.get("pdt_applies", True):
+                pdt_emoji = "🟢" if pdt["count"] < 2 else ("🟡" if pdt["count"] < 3 else "🔴")
+                lines.append(f"| PDT 日内交易 | {pdt_emoji} {pdt['count']}/{pdt['max']} 次 |")
+            else:
+                lines.append(f"| PDT 日内交易 | ✅ 不适用 (净值 ≥ $25,000) |")
+
             lines.append(f"| 账户净值 | ${net_liq:,.2f} |")
             lines.append(f"| 可用资金 | ${summary.get('available_funds', 0):,.2f} |")
 
